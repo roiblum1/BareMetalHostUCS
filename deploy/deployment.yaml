@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ucs-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-ucs-username"
+  password: "your-ucs-password"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bmh-generator-config
+  namespace: metal3-system
+data:
+  UCS_ENDPOINT: "https://your-ucs-endpoint.example.com"
+  DEFAULT_IPMI_USERNAME: "admin"
+  DEFAULT_IPMI_PASSWORD: "password"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bmh-generator-operator
+  namespace: metal3-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Kopf uses leader election, so only one instance
+  selector:
+    matchLabels:
+      app: bmh-generator-operator
+  template:
+    metadata:
+      labels:
+        app: bmh-generator-operator
+    spec:
+      serviceAccountName: bmh-generator-operator
+      containers:
+      - name: operator
+        image: your-registry/bmh-generator-operator:latest
+        imagePullPolicy: Always
+        env:
+        - name: UCS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: bmh-generator-config
+              key: UCS_ENDPOINT
+        - name: UCS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: ucs-credentials
+              key: username
+        - name: UCS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ucs-credentials
+              key: password
+        - name: DEFAULT_IPMI_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: bmh-generator-config
+              key: DEFAULT_IPMI_USERNAME
+        - name: DEFAULT_IPMI_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: bmh-generator-config
+              key: DEFAULT_IPMI_PASSWORD
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
