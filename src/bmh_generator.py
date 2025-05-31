@@ -1,6 +1,7 @@
 import re
 import ipaddress
 import base64
+import yaml
 from typing import Dict, Any, Optional
 
 
@@ -18,6 +19,14 @@ def validate_inputs(mac: str, ip: str) -> None:
         raise ValueError(f"Invalid IPv4 address: {ip}") from exc
 
 
+def validate_yaml_format(data: Dict[str, Any]) -> None:
+    """Validate that the generated data can be properly serialized to YAML format"""
+    try:
+        yaml.dump(data, default_flow_style=False)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Generated data cannot be converted to valid YAML: {exc}") from exc
+
+
 def generate_baremetal_host(
     name: str,
     namespace: str,
@@ -31,7 +40,7 @@ def generate_baremetal_host(
 
     validate_inputs(mac_address, ipmi_address)
 
-    return {
+    bmh_data = {
         "apiVersion": "metal3.io/v1alpha1",
         "kind": "BareMetalHost",
         "metadata": {
@@ -58,6 +67,9 @@ def generate_baremetal_host(
             "bootMode": "UEFI",
         },
     }
+    
+    validate_yaml_format(bmh_data)
+    return bmh_data
 
 
 def generate_bmc_secret(
@@ -66,7 +78,7 @@ def generate_bmc_secret(
     username: str,
     password: str,
 ) -> Dict[str, Any]:
-    return {
+    secret_data = {
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {"name": f"{name}-bmc-secret", "namespace": namespace},
@@ -76,3 +88,6 @@ def generate_bmc_secret(
             "password": base64.b64encode(password.encode()).decode(),
         },
     }
+    
+    validate_yaml_format(secret_data)
+    return secret_data
