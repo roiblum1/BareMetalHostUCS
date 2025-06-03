@@ -9,6 +9,7 @@ import kopf
 import kubernetes
 from kubernetes import client, config
 from typing import Dict, Any, Optional
+from ucscsdk.ucschandle import UcscHandle
 from ucsmsdk.ucshandle import UcsHandle
 from ucsmsdk.mometa.compute.ComputeRackUnit import ComputeRackUnit
 
@@ -145,40 +146,44 @@ def generate_bmc_secret(
 # ============================================================================
 
 class UCSClient:
-    def __init__(self, ucs_ip=None, username=None, password=None):
-        self.ucs_ip = ucs_ip
-        self.username = username
-        self.password = password
-        self.handle = None
-        ucs_logger.info(f"Initialized UCS client for endpoint: {ucs_ip}")
+    def __init__(self, ucs_central_ip=None, central_username=None, central_password=None, 
+                 manager_username=None, manager_password=None):
+        self.ucs_central_ip = ucs_central_ip
+        self.central_username = central_username
+        self.central_password = central_password
+        self.manager_username = manager_username
+        self.manager_password = manager_password
+        self.ucsc_handle = None
+        ucs_logger.info(f"Initialized UCS client for UCS Central: {ucs_central_ip}")
         
     def connect(self):
-        """Connect to UCS Manager"""
-        ucs_logger.info(f"Attempting to connect to UCS at {self.ucs_ip}")
+        """Connect to UCS Central"""
+        ucs_logger.info(f"Attempting to connect to UCS Central at {self.ucs_central_ip}")
         
-        if not all([self.ucs_ip, self.username, self.password]):
+        if not all([self.ucs_central_ip, self.central_username, self.central_password, 
+                   self.manager_username, self.manager_password]):
             ucs_logger.error("Missing required UCS connection parameters")
-            raise ValueError("UCS IP, username, and password must be provided")
+            raise ValueError("UCS Central IP, central credentials, and manager credentials must be provided")
         
         try:
-            self.handle = UcsHandle(self.ucs_ip, self.username, self.password)
-            self.handle.login()
-            ucs_logger.info(f"Successfully connected to UCS at {self.ucs_ip}")
+            self.ucsc_handle = UcscHandle(self.ucs_central_ip, self.central_username, self.central_password)
+            self.ucsc_handle.login()
+            ucs_logger.info(f"Successfully connected to UCS Central at {self.ucs_central_ip}")
         except Exception as e:
-            ucs_logger.error(f"Failed to connect to UCS: {str(e)}")
+            ucs_logger.error(f"Failed to connect to UCS Central: {str(e)}")
             raise
         
     def get_all_servers(self):
-        """Query all rack servers from UCS"""
-        ucs_logger.debug("Querying all compute rack units")
+        """Query all logical servers from UCS Central"""
+        ucs_logger.debug("Querying all logical servers")
         
-        if not self.handle:
-            ucs_logger.error("Not connected to UCS")
-            raise RuntimeError("Not connected to UCS. Call connect() first.")
+        if not self.ucsc_handle:
+            ucs_logger.error("Not connected to UCS Central")
+            raise RuntimeError("Not connected to UCS Central. Call connect() first.")
         
         try:
-            servers = self.handle.query_classid("computeRackUnit")
-            ucs_logger.info(f"Found {len(servers)} servers in UCS")
+            servers = self.ucsc_handle.query_classid("lsServer")
+            ucs_logger.info(f"Found {len(servers)} servers in UCS Central")
             return servers
         except Exception as e:
             ucs_logger.error(f"Failed to query servers: {str(e)}")
@@ -188,7 +193,7 @@ class UCSClient:
         """Get server MAC and IPMI address by server name"""
         ucs_logger.info(f"Getting server info for: {server_name}")
         
-        if not self.handle:
+        if not self.ucsc_handle:
             ucs_logger.debug("Not connected, attempting to connect")
             self.connect()
             
@@ -202,25 +207,30 @@ class UCSClient:
         ucs_logger.info(f"Retrieved info for {server_name} - MAC: {mac_address}, KVM IP: {kvm_ip}")
         return mac_address, kvm_ip
     
-    def get_ucs_info_for_node(self, node, servers):
+    def get_ucs_info_for_node(self, node_name, servers):
         """Extract UCS information for a specific node"""
-        ucs_logger.info(f"Processing node: {node}")
+        ucs_logger.info(f"Processing node: {node_name}")
+        
         for server in servers:
-            domain = server.dn.split("/")[0]
-            rack_id = server.pn_dn.split("-")[-1] if hasattr(server, 'pn_dn') else ""
-            
             ucs_logger.debug(f"Checking server: {server.name} (DN: {server.dn})")
             
-            if node in server.name:
+            if node_name.upper() == server.name.upper():
                 ucs_logger.info(f"Found matching server: {server.name}")
+                domain = server.domain
+                rack_id = server.pn_dn.split("-")[-1] if hasattr(server, 'pn_dn') else ""
                 ucsm_handle = None
                 
                 try:
-                    ucs_logger.debug(f"Connecting to domain: {domain}")
-                    ucsm_handle = UcsHandle(domain, self.username, self.password)
+                    ucs_logger.debug(f"Connecting to UCS Manager domain: {domain}")
+                    ucsm_handle = UcsHandle(domain, self.manager_username, self.manager_password)
                     ucsm_handle.login()
                     
-                    server_details = ucsm_handle.query_dn(server.dn)
+                    # Get server details from UCS Central (not UCS Manager)
+                    server_details = self.ucsc_handle.query_dn(server.dn)
+                    if not server_details:
+                        ucs_logger.warning(f"No server details found for {node_name}")
+                        continue
+                    
                     ucs_logger.debug(f"Retrieved server details for DN: {server.dn}")
                     
                     kvm_ip = self._get_kvm_ip(ucsm_handle, server_details)
@@ -230,7 +240,7 @@ class UCSClient:
                     return mac_address, kvm_ip
                     
                 except Exception as e:
-                    ucs_logger.error(f"Error retrieving data for {node}: {str(e)}")
+                    ucs_logger.error(f"Error retrieving data for {node_name}: {str(e)}")
                     ucs_logger.exception("Full exception details:")
                     
                 finally:
@@ -241,27 +251,26 @@ class UCSClient:
                         except Exception as e:
                             ucs_logger.warning(f"Failed to logout from domain {domain}: {str(e)}")
         
-        ucs_logger.warning(f"No matching server found for node: {node}")
+        ucs_logger.warning(f"No matching server found for node: {node_name}")
         return None, None
     
     def _get_kvm_ip(self, ucsm_handle, server_details):
-        """Extract KVM IP address from server management interfaces"""
-        ucs_logger.debug("Querying management interfaces")
+        """Extract KVM IP address from VnicIpV4PooledAddr"""
+        ucs_logger.debug("Querying VnicIpV4PooledAddr for KVM IP")
         
         try:
-            mgmt_interfaces = ucsm_handle.query_children(in_mo=server_details, class_id="mgmtInterface")
-            ucs_logger.debug(f"Found {len(mgmt_interfaces)} management interfaces")
+            mgmt_interfaces = ucsm_handle.query_children(in_mo=server_details, class_id="VnicIpV4PooledAddr")
+            ucs_logger.debug(f"Found {len(mgmt_interfaces)} IP pool addresses")
             
             kvm_ip = ""
-            for idx, iface in enumerate(mgmt_interfaces):
-                ucs_logger.debug(f"Checking interface {idx}: {iface}")
-                if hasattr(iface, 'ip_address') and iface.ip_address:
-                    kvm_ip = iface.ip_address
+            for iface in mgmt_interfaces:
+                if hasattr(iface, 'addr') and iface.addr:
+                    kvm_ip = str(iface.addr)
                     ucs_logger.info(f"Found KVM IP: {kvm_ip}")
                     break
             
             if not kvm_ip:
-                ucs_logger.warning("No KVM IP found in management interfaces")
+                ucs_logger.warning("No KVM IP found in VnicIpV4PooledAddr")
                 
             return kvm_ip
             
@@ -270,37 +279,64 @@ class UCSClient:
             return ""
     
     def _get_mac_address(self, ucsm_handle, server_details):
-        """Extract MAC address from server network adapters"""
-        ucs_logger.debug("Querying network adapters")
+        """Extract MAC address from VnicEther (sorted by name)"""
+        ucs_logger.debug("Querying VnicEther for MAC address")
         
         try:
-            adapters = ucsm_handle.query_children(in_mo=server_details, class_id="adaptorUnit")
-            ucs_logger.debug(f"Found {len(adapters)} adapters")
+            adapters = ucsm_handle.query_children(in_mo=server_details, class_id="VnicEther")
+            ucs_logger.debug(f"Found {len(adapters)} VnicEther adapters")
             
             mac_address = ""
             if adapters:
-                vnics = ucsm_handle.query_children(in_mo=adapters[0], class_id="adaptorHostEthIf")
-                ucs_logger.debug(f"Found {len(vnics)} vNICs on first adapter")
+                # Sort adapters by name (same as in your working script)
+                sorted_adapters = sorted(adapters, key=lambda x: x.name[3:])
                 
-                if vnics and hasattr(vnics[0], 'mac'):
-                    mac_address = vnics[0].mac
+                if sorted_adapters and hasattr(sorted_adapters[0], 'addr'):
+                    mac_address = sorted_adapters[0].addr
                     ucs_logger.info(f"Found MAC address: {mac_address}")
                 else:
-                    ucs_logger.warning("No vNICs with MAC address found")
+                    ucs_logger.warning("No MAC address found in first VnicEther adapter")
             else:
-                ucs_logger.warning("No network adapters found")
+                ucs_logger.warning("No VnicEther adapters found")
                 
-            return mac_address
+            return mac_address if mac_address else "No MAC address found"
             
         except Exception as e:
             ucs_logger.error(f"Error retrieving MAC address: {str(e)}")
-            return ""
+            return "No MAC address found"
+    
+    def disconnect(self):
+        """Disconnect from UCS Central"""
+        if self.ucsc_handle:
+            try:
+                self.ucsc_handle.logout()
+                ucs_logger.info("Disconnected from UCS Central")
+            except Exception as e:
+                ucs_logger.warning(f"Error during UCS Central logout: {str(e)}")
+
 
 # ============================================================================
 # Kubernetes Operator (from operator.py)
 # ============================================================================
 
 # Load Kubernetes config
+try:
+    config.load_incluster_config()  # Use this when running in cluster
+    operator_logger.info("Loaded in-cluster Kubernetes configuration")
+except Exception as e:
+    operator_logger.warning(f"Failed to load in-cluster config: {e}")
+    operator_logger.info("Falling back to kubeconfig")
+    config.load_kube_config()  # Use this when running locally
+
+# Initialize Kubernetes clients
+k8s_client = client.ApiClient()
+custom_api = client.CustomObjectsApi(k8s_client)
+core_v1 = client.CoreV1Api(k8s_client)
+operator_logger.info("Initialized Kubernetes API clients")
+
+# UCS client (initialized on startup)
+ucs_client = None
+
 try:
     config.load_incluster_config()  # Use this when running in cluster
     operator_logger.info("Loaded in-cluster Kubernetes configuration")
@@ -327,16 +363,44 @@ def configure(settings: kopf.OperatorSettings, **_):
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
     operator_logger.debug("Configured operator persistence settings")
     
-    # Initialize UCS client
+    # Initialize UCS client with both Central and Manager credentials
     global ucs_client
-    ucs_endpoint = os.getenv('UCS_ENDPOINT', 'https://ucs.example.com')
-    ucs_username = os.getenv('UCS_USERNAME', 'admin')
-    ucs_password = os.getenv('UCS_PASSWORD', 'password')
     
-    operator_logger.info(f"Initializing UCS client with endpoint: {ucs_endpoint}")
-    operator_logger.debug(f"UCS username: {ucs_username}")
+    # UCS Central credentials
+    ucs_central_ip = os.getenv('UCS_CENTRAL_IP')
+    central_username = os.getenv('UCS_CENTRAL_USERNAME', 'admin')
+    central_password = os.getenv('UCS_CENTRAL_PASSWORD')
     
-    ucs_client = UCSClient(ucs_endpoint, ucs_username, ucs_password)
+    # UCS Manager credentials (used for all managers)
+    manager_username = os.getenv('UCS_MANAGER_USERNAME', 'admin')
+    manager_password = os.getenv('UCS_MANAGER_PASSWORD')
+    
+    # Validate required environment variables
+    if not all([ucs_central_ip, central_password, manager_password]):
+        operator_logger.error("Missing required UCS environment variables")
+        operator_logger.error("Required: UCS_CENTRAL_IP, UCS_CENTRAL_PASSWORD, UCS_MANAGER_PASSWORD")
+        raise ValueError("Missing required UCS configuration. Please set environment variables.")
+    
+    operator_logger.info(f"Initializing UCS client with UCS Central IP: {ucs_central_ip}")
+    operator_logger.debug(f"UCS Central username: {central_username}")
+    operator_logger.debug(f"UCS Manager username: {manager_username}")
+    
+    ucs_client = UCSClient(
+        ucs_central_ip=ucs_central_ip,
+        central_username=central_username,
+        central_password=central_password,
+        manager_username=manager_username,
+        manager_password=manager_password
+    )
+    
+    # Pre-connect to UCS Central during startup
+    try:
+        ucs_client.connect()
+        operator_logger.info("Successfully connected to UCS Central during startup")
+    except Exception as e:
+        operator_logger.error(f"Failed to connect to UCS Central during startup: {e}")
+        # Continue anyway - connection will be retried when needed
+    
     operator_logger.info("Operator configuration completed successfully")
 
 @kopf.on.create('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
@@ -361,6 +425,14 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
         patch.status['message'] = error_msg
         raise kopf.PermanentError(error_msg)
     
+    # Check if UCS client is initialized
+    if not ucs_client:
+        error_msg = "UCS client not initialized. Check environment variables."
+        operator_logger.error(error_msg)
+        patch.status['phase'] = 'Failed'
+        patch.status['message'] = error_msg
+        raise kopf.PermanentError(error_msg)
+    
     # Optional: credentials from spec or use defaults
     ipmi_username = spec.get('ipmiUsername', os.getenv('DEFAULT_IPMI_USERNAME', 'admin'))
     ipmi_password_ref = spec.get('ipmiPasswordSecret', {})
@@ -372,11 +444,13 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
     try:
         # Update status to show we're processing
         patch.status['phase'] = 'Processing'
-        patch.status['message'] = f'Looking up server {server_name} in UCS'
+        patch.status['message'] = f'Looking up server {server_name} in UCS Central'
         operator_logger.info(f"Status updated to Processing for {name}")
         
-        # Get server info from UCS
-        operator_logger.info(f"Querying UCS for server: {server_name}")
+        # Get server info from UCS (this now queries UCS Central)
+        operator_logger.info(f"Querying UCS Central for server: {server_name}")
+        
+        # The get_server_info method now handles connection internally
         mac_address, ipmi_address = ucs_client.get_server_info(server_name)
         operator_logger.info(f"UCS query successful - MAC: {mac_address}, IPMI: {ipmi_address}")
         
@@ -503,6 +577,21 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
     #     operator_logger.error(f"Failed to delete BareMetalHost: {e}")
     #     pass
 
+# Cleanup handler to disconnect from UCS Central on shutdown
+@kopf.on.cleanup()
+async def cleanup_fn(**kwargs):
+    """Cleanup function called on operator shutdown"""
+    operator_logger.info("Operator shutting down, cleaning up resources")
+    
+    if ucs_client:
+        try:
+            ucs_client.disconnect()
+            operator_logger.info("Successfully disconnected from UCS Central")
+        except Exception as e:
+            operator_logger.warning(f"Error disconnecting from UCS Central: {e}")
+    
+    operator_logger.info("Cleanup completed")
+    
 # ============================================================================
 # Main entry point
 # ============================================================================
