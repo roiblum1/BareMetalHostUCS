@@ -15,4 +15,4 @@ RUN useradd -m -u 1000 operator && \
 USER operator
 
 # Run the operator
-CMD ["kopf", "run", "--liveness=http://0.0.0.0:8080/healthz", "/app/src/operator.py", "--all-namespaces"]
+CMD ["kopf", "run", "--liveness=http://0.0.0.0:8080/healthz", "/app/src/operator_bmh_gen.py", "--all-namespaces"]

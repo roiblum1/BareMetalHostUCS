@@ -1,0 +1,16 @@
+apiVersion: infra.example.com/v1alpha1
+kind: BareMetalHostGenerator
+metadata:
+  name: ocp4-roi-compute01
+  namespace: openshift-machine-api
+spec:
+  serverName: "compute-01"  # Name of server in UCS (optional, defaults to CR name)
+  namespace: "openshift-machine-api"  # Target namespace for BareMetalHost
+  infraEnv: "ocp4-roi"  # InfraEnv name for OpenShift Agent-based installation
+  ipmiUsername: "admin"  # IPMI username (optional)
+  ipmiPasswordSecret:  # Optional: reference to secret containing IPMI password
+    name: "ipmi-credentials"
+    key: "password"
+  labels:  # Additional labels for the BareMetalHost
+    node-role.kubernetes.io/worker: ""    
+    custom-label: "custom-value"
