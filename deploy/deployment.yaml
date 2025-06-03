@@ -1,32 +1,48 @@
+# UCS Central credentials secret
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ucs-credentials
+  name: ucs-central-credentials
   namespace: metal3-system
 type: Opaque
 stringData:
-  username: "your-ucs-username"
-  password: "your-ucs-password"
+  username: "your-ucs-central-username"  # Replace with your UCS Central username
+  password: "your-ucs-central-password"  # Replace with your UCS Central password
 ---
+# UCS Manager credentials secret (used for all UCS Managers)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ucs-manager-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-ucs-manager-username"  # Replace with your UCS Manager username
+  password: "your-ucs-manager-password"  # Replace with your UCS Manager password
+---
+# Configuration for UCS Central IP and default IPMI settings
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: bmh-generator-config
   namespace: metal3-system
 data:
-  UCS_ENDPOINT: "https://your-ucs-endpoint.example.com"
+  UCS_CENTRAL_IP: "10.0.0.1"  # Replace with your UCS Central IP address
   DEFAULT_IPMI_USERNAME: "admin"
   DEFAULT_IPMI_PASSWORD: "password"
 ---
+# Operator deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bmh-generator-operator
   namespace: metal3-system
+  labels:
+    app: bmh-generator-operator
 spec:
   replicas: 1
   strategy:
-    type: Recreate  # Kopf uses leader election, so only one instance
+    type: Recreate  # Kopf uses leader election, so only one instance should run
   selector:
     matchLabels:
       app: bmh-generator-operator
@@ -38,24 +54,37 @@ spec:
       serviceAccountName: bmh-generator-operator
       containers:
       - name: operator
-        image: your-registry/bmh-generator-operator:latest
+        image: your-registry/bmh-generator-operator:latest  # Replace with your image
         imagePullPolicy: Always
         env:
-        - name: UCS_ENDPOINT
+        # UCS Central configuration
+        - name: UCS_CENTRAL_IP
           valueFrom:
             configMapKeyRef:
               name: bmh-generator-config
-              key: UCS_ENDPOINT
-        - name: UCS_USERNAME
+              key: UCS_CENTRAL_IP
+        - name: UCS_CENTRAL_USERNAME
           valueFrom:
             secretKeyRef:
-              name: ucs-credentials
+              name: ucs-central-credentials
               key: username
-        - name: UCS_PASSWORD
+        - name: UCS_CENTRAL_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: ucs-credentials
+              name: ucs-central-credentials
               key: password
+        # UCS Manager configuration
+        - name: UCS_MANAGER_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: ucs-manager-credentials
+              key: username
+        - name: UCS_MANAGER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ucs-manager-credentials
+              key: password
+        # Default IPMI configuration
         - name: DEFAULT_IPMI_USERNAME
           valueFrom:
             configMapKeyRef:
@@ -68,8 +97,20 @@ spec:
               key: DEFAULT_IPMI_PASSWORD
         resources:
           requests:
-            memory: "64Mi"
+            memory: "128Mi"
             cpu: "100m"
           limits:
-            memory: "256Mi"
+            memory: "512Mi"
             cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10

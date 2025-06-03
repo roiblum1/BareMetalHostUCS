@@ -1,16 +1,56 @@
+# Example BareMetalHostGenerator resource
+# This will query UCS Central for the server and create a BareMetalHost
 apiVersion: infra.example.com/v1alpha1
 kind: BareMetalHostGenerator
 metadata:
   name: ocp4-roi-compute01
   namespace: openshift-machine-api
 spec:
-  serverName: "compute-01"  # Name of server in UCS (optional, defaults to CR name)
-  namespace: "openshift-machine-api"  # Target namespace for BareMetalHost
-  infraEnv: "ocp4-roi"  # InfraEnv name for OpenShift Agent-based installation
-  ipmiUsername: "admin"  # IPMI username (optional)
-  ipmiPasswordSecret:  # Optional: reference to secret containing IPMI password
+  # Name of the server as it appears in UCS Central
+  # If not specified, will use the metadata.name
+  serverName: "compute-01"
+  
+  # Target namespace where the BareMetalHost will be created
+  # If not specified, will use the current namespace
+  namespace: "openshift-machine-api"
+  
+  # Required: InfraEnv name for OpenShift Agent-based installation
+  infraEnv: "ocp4-roi"
+  
+  # Optional: IPMI username (defaults to DEFAULT_IPMI_USERNAME from operator config)
+  ipmiUsername: "admin"
+  
+  # Optional: Reference to a secret containing the IPMI password
+  # If not specified, will use DEFAULT_IPMI_PASSWORD from operator config
+  ipmiPasswordSecret:
     name: "ipmi-credentials"
     key: "password"
-  labels:  # Additional labels for the BareMetalHost
-    node-role.kubernetes.io/worker: ""    
-    custom-label: "custom-value"
+  
+  # Optional: Additional labels to add to the generated BareMetalHost
+  labels:
+    node-role.kubernetes.io/worker: ""
+    cluster-name: "ocp4-roi"
+    rack-location: "rack-42"
+---
+# Example with minimal configuration
+apiVersion: infra.example.com/v1alpha1
+kind: BareMetalHostGenerator
+metadata:
+  name: ocp4-roi-compute02
+  namespace: openshift-machine-api
+spec:
+  # Only infraEnv is required
+  infraEnv: "ocp4-roi"
+  # Server name will default to "ocp4-roi-compute02" (metadata.name)
+  # Namespace will default to "openshift-machine-api" (metadata.namespace)
+  # IPMI credentials will use operator defaults
+---
+# Example with custom IPMI credentials secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ipmi-credentials
+  namespace: openshift-machine-api
+type: Opaque
+stringData:
+  password: "custom-ipmi-password"
