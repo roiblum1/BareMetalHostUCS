@@ -5,10 +5,12 @@ import yaml
 import os
 import logging
 import subprocess
+import asyncio
 import kopf
 import kubernetes
 from kubernetes import client, config
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from datetime import datetime
 from ucscsdk.ucschandle import UcscHandle
 from ucsmsdk.ucshandle import UcsHandle
 from ucsmsdk.mometa.compute.ComputeRackUnit import ComputeRackUnit
@@ -24,6 +26,11 @@ logger = logging.getLogger(__name__)
 bmh_logger = logging.getLogger('bmh_generator')
 ucs_logger = logging.getLogger('ucs_client')
 operator_logger = logging.getLogger('k8s_operator')
+buffer_logger = logging.getLogger('bmh_buffer')
+
+# Global configuration
+MAX_AVAILABLE_SERVERS = 20  # Maximum number of servers that can be available (not in cluster)
+BUFFER_CHECK_INTERVAL = 30  # Seconds between buffer checks
 
 # ============================================================================
 # BMH Generator Functions (from bmh_generator.py)
@@ -316,7 +323,7 @@ class UCSClient:
 
 
 # ============================================================================
-# Kubernetes Operator (from operator.py)
+# Kubernetes Operator with Buffer Management
 # ============================================================================
 
 # Load Kubernetes config
@@ -337,22 +344,219 @@ operator_logger.info("Initialized Kubernetes API clients")
 # UCS client (initialized on startup)
 ucs_client = None
 
-try:
-    config.load_incluster_config()  # Use this when running in cluster
-    operator_logger.info("Loaded in-cluster Kubernetes configuration")
-except Exception as e:
-    operator_logger.warning(f"Failed to load in-cluster config: {e}")
-    operator_logger.info("Falling back to kubeconfig")
-    config.load_kube_config()  # Use this when running locally
+# Buffer management
+bmh_buffer_lock = asyncio.Lock()
+buffer_check_task = None
 
-# Initialize Kubernetes clients
-k8s_client = client.ApiClient()
-custom_api = client.CustomObjectsApi(k8s_client)
-core_v1 = client.CoreV1Api(k8s_client)
-operator_logger.info("Initialized Kubernetes API clients")
+def get_available_baremetalhosts() -> List[Dict[str, Any]]:
+    """Get list of BareMetalHosts that are available (not in a cluster)"""
+    buffer_logger.debug("Querying all BareMetalHosts")
+    
+    try:
+        # Get all BareMetalHosts across all namespaces
+        bmhs = custom_api.list_cluster_custom_object(
+            group="metal3.io",
+            version="v1alpha1",
+            plural="baremetalhosts"
+        )
+        
+        available_bmhs = []
+        
+        for bmh in bmhs.get('items', []):
+            # Check if BMH is available (not provisioned/in use)
+            # Common states: "ready", "available", "provisioning", "provisioned", "deprovisioning", "error"
+            status = bmh.get('status', {})
+            provisioning_state = status.get('provisioning', {}).get('state', '')
+            operational_status = status.get('operationalStatus', '')
+            
+            # Consider a BMH available if it's in "ready" or "available" state
+            # and not provisioned or being provisioned
+            if (provisioning_state in ['', 'ready', 'available', 'inspecting', 'preparing'] and 
+                operational_status != 'detached' and
+                not status.get('provisioning', {}).get('consumer')):
+                available_bmhs.append(bmh)
+                buffer_logger.debug(f"BMH {bmh['metadata']['name']} is available (state: {provisioning_state})")
+            else:
+                buffer_logger.debug(f"BMH {bmh['metadata']['name']} is not available (state: {provisioning_state}, consumer: {status.get('provisioning', {}).get('consumer')})")
+        
+        buffer_logger.info(f"Found {len(available_bmhs)} available BareMetalHosts")
+        return available_bmhs
+        
+    except Exception as e:
+        buffer_logger.error(f"Error querying BareMetalHosts: {str(e)}")
+        if hasattr(e, 'status') and e.status == 404:
+            buffer_logger.warning("Metal3 CRD not found - returning empty list")
+            return []
+        raise
 
-# UCS client (initialized on startup)
-ucs_client = None
+def get_buffered_generators() -> List[Dict[str, Any]]:
+    """Get list of BareMetalHostGenerators that are in Buffered state"""
+    buffer_logger.debug("Querying buffered BareMetalHostGenerators")
+    
+    try:
+        # Get all BareMetalHostGenerators across all namespaces
+        bmhgens = custom_api.list_cluster_custom_object(
+            group="infra.example.com",
+            version="v1alpha1",
+            plural="baremetalhostgenerators"
+        )
+        
+        buffered = []
+        
+        for bmhgen in bmhgens.get('items', []):
+            status = bmhgen.get('status', {})
+            if status.get('phase') == 'Buffered':
+                buffered.append(bmhgen)
+                buffer_logger.debug(f"BareMetalHostGenerator {bmhgen['metadata']['name']} is buffered")
+        
+        buffer_logger.info(f"Found {len(buffered)} buffered BareMetalHostGenerators")
+        return buffered
+        
+    except Exception as e:
+        buffer_logger.error(f"Error querying BareMetalHostGenerators: {str(e)}")
+        raise
+
+async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
+    """Process a single buffered BareMetalHostGenerator"""
+    name = bmhgen['metadata']['name']
+    namespace = bmhgen['metadata']['namespace']
+    buffer_logger.info(f"Processing buffered generator: {name}")
+    
+    try:
+        # Get the stored server info from status
+        status = bmhgen.get('status', {})
+        mac_address = status.get('macAddress')
+        ipmi_address = status.get('ipmiAddress')
+        
+        if not mac_address or not ipmi_address:
+            buffer_logger.error(f"Missing server info for buffered generator {name}")
+            return
+        
+        spec = bmhgen['spec']
+        target_namespace = spec.get('namespace', namespace)
+        infra_env = spec.get('infraEnv')
+        ipmi_username = spec.get('ipmiUsername', os.getenv('DEFAULT_IPMI_USERNAME', 'admin'))
+        ipmi_password_ref = spec.get('ipmiPasswordSecret', {})
+        
+        # Get IPMI password
+        ipmi_password = os.getenv('DEFAULT_IPMI_PASSWORD', 'password')
+        if ipmi_password_ref:
+            secret_name = ipmi_password_ref.get('name')
+            secret_key = ipmi_password_ref.get('key', 'password')
+            
+            try:
+                secret = core_v1.read_namespaced_secret(secret_name, namespace)
+                ipmi_password = base64.b64decode(secret.data[secret_key]).decode()
+            except Exception as e:
+                buffer_logger.warning(f"Could not read IPMI password from secret: {e}")
+        
+        # Create BMC Secret
+        bmc_secret = generate_bmc_secret(
+            name=name,
+            namespace=target_namespace,
+            username=ipmi_username,
+            password=ipmi_password
+        )
+        
+        try:
+            core_v1.create_namespaced_secret(
+                namespace=target_namespace,
+                body=bmc_secret
+            )
+            buffer_logger.info(f"Created BMC secret: {name}-bmc-secret")
+        except kubernetes.client.exceptions.ApiException as e:
+            if e.status == 409:  # Already exists
+                buffer_logger.debug(f"BMC secret already exists: {name}-bmc-secret")
+            else:
+                raise
+        
+        # Create BareMetalHost
+        bmh = generate_baremetal_host(
+            name=name,
+            namespace=target_namespace,
+            mac_address=mac_address,
+            ipmi_address=ipmi_address,
+            ipmi_username=ipmi_username,
+            ipmi_password=ipmi_password,
+            infra_env=infra_env,
+            labels=spec.get('labels', {})
+        )
+        
+        custom_api.create_namespaced_custom_object(
+            group="metal3.io",
+            version="v1alpha1",
+            namespace=target_namespace,
+            plural="baremetalhosts",
+            body=bmh
+        )
+        buffer_logger.info(f"Created BareMetalHost: {name}")
+        
+        # Update generator status to Completed
+        patch = {
+            "status": {
+                "phase": "Completed",
+                "message": f"Successfully created BareMetalHost {name} (released from buffer)",
+                "bmhName": name,
+                "bmhNamespace": target_namespace,
+                "bufferedAt": None
+            }
+        }
+        
+        custom_api.patch_namespaced_custom_object_status(
+            group="infra.example.com",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="baremetalhostgenerators",
+            name=name,
+            body=patch
+        )
+        buffer_logger.info(f"Updated generator {name} status to Completed")
+        
+    except Exception as e:
+        buffer_logger.error(f"Error processing buffered generator {name}: {str(e)}")
+        raise
+
+async def buffer_check_loop():
+    """Periodically check buffer and release servers if needed"""
+    buffer_logger.info("Starting buffer check loop")
+    
+    while True:
+        try:
+            await asyncio.sleep(BUFFER_CHECK_INTERVAL)
+            
+            async with bmh_buffer_lock:
+                buffer_logger.debug("Running buffer check")
+                
+                # Get current available count
+                available_bmhs = get_available_baremetalhosts()
+                available_count = len(available_bmhs)
+                
+                buffer_logger.info(f"Current available BareMetalHosts: {available_count}/{MAX_AVAILABLE_SERVERS}")
+                
+                # If we have room for more servers, release from buffer
+                if available_count < MAX_AVAILABLE_SERVERS:
+                    slots_available = MAX_AVAILABLE_SERVERS - available_count
+                    buffer_logger.info(f"Can release {slots_available} servers from buffer")
+                    
+                    # Get buffered generators sorted by buffer time (FIFO)
+                    buffered = get_buffered_generators()
+                    buffered.sort(key=lambda x: x['status'].get('bufferedAt', ''))
+                    
+                    # Release servers from buffer
+                    for i, bmhgen in enumerate(buffered[:slots_available]):
+                        buffer_logger.info(f"Releasing buffered generator {i+1}/{slots_available}: {bmhgen['metadata']['name']}")
+                        await process_buffered_generator(bmhgen)
+                        
+                        # Small delay between releases to avoid overwhelming the system
+                        if i < slots_available - 1:
+                            await asyncio.sleep(2)
+                else:
+                    buffer_logger.debug("No slots available to release servers from buffer")
+                    
+        except Exception as e:
+            buffer_logger.error(f"Error in buffer check loop: {str(e)}")
+            buffer_logger.exception("Full exception details:")
+            # Continue loop even if error occurs
 
 @kopf.on.startup()
 def configure(settings: kopf.OperatorSettings, **_):
@@ -401,6 +605,11 @@ def configure(settings: kopf.OperatorSettings, **_):
         operator_logger.error(f"Failed to connect to UCS Central during startup: {e}")
         # Continue anyway - connection will be retried when needed
     
+    # Start buffer check loop
+    global buffer_check_task
+    buffer_check_task = asyncio.create_task(buffer_check_loop())
+    buffer_logger.info("Started buffer check background task")
+    
     operator_logger.info("Operator configuration completed successfully")
 
 @kopf.on.create('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
@@ -433,14 +642,6 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
         patch.status['message'] = error_msg
         raise kopf.PermanentError(error_msg)
     
-    # Optional: credentials from spec or use defaults
-    ipmi_username = spec.get('ipmiUsername', os.getenv('DEFAULT_IPMI_USERNAME', 'admin'))
-    ipmi_password_ref = spec.get('ipmiPasswordSecret', {})
-    
-    operator_logger.debug(f"IPMI username: {ipmi_username}")
-    if ipmi_password_ref:
-        operator_logger.debug(f"IPMI password will be read from secret: {ipmi_password_ref}")
-    
     try:
         # Update status to show we're processing
         patch.status['phase'] = 'Processing'
@@ -449,17 +650,41 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
         
         # Get server info from UCS (this now queries UCS Central)
         operator_logger.info(f"Querying UCS Central for server: {server_name}")
-        
-        # The get_server_info method now handles connection internally
         mac_address, ipmi_address = ucs_client.get_server_info(server_name)
         operator_logger.info(f"UCS query successful - MAC: {mac_address}, IPMI: {ipmi_address}")
         
-        # Get IPMI password (from secret or default)
+        # Store server info in status for later use
+        patch.status['macAddress'] = mac_address
+        patch.status['ipmiAddress'] = ipmi_address
+        
+        # Check if we should buffer or create immediately
+        async with bmh_buffer_lock:
+            available_bmhs = get_available_baremetalhosts()
+            available_count = len(available_bmhs)
+            
+            buffer_logger.info(f"Current available BareMetalHosts: {available_count}/{MAX_AVAILABLE_SERVERS}")
+            
+            if available_count >= MAX_AVAILABLE_SERVERS:
+                # Buffer this server
+                patch.status['phase'] = 'Buffered'
+                patch.status['message'] = f'Server buffered (available: {available_count}/{MAX_AVAILABLE_SERVERS})'
+                patch.status['bufferedAt'] = datetime.now().isoformat()
+                
+                buffer_logger.info(f"Buffering server {server_name} - limit reached ({available_count}/{MAX_AVAILABLE_SERVERS})")
+                return  # Exit here, server will be processed later by buffer check loop
+            
+            # We have room, create immediately
+            buffer_logger.info(f"Creating BareMetalHost immediately - room available ({available_count}/{MAX_AVAILABLE_SERVERS})")
+        
+        # Continue with immediate creation
+        ipmi_username = spec.get('ipmiUsername', os.getenv('DEFAULT_IPMI_USERNAME', 'admin'))
+        ipmi_password_ref = spec.get('ipmiPasswordSecret', {})
+        
+        # Get IPMI password
         ipmi_password = os.getenv('DEFAULT_IPMI_PASSWORD', 'password')
         if ipmi_password_ref:
             secret_name = ipmi_password_ref.get('name')
             secret_key = ipmi_password_ref.get('key', 'password')
-            operator_logger.debug(f"Reading IPMI password from secret: {secret_name}, key: {secret_key}")
             
             try:
                 secret = core_v1.read_namespaced_secret(secret_name, namespace)
@@ -507,7 +732,6 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
         # Create BareMetalHost
         operator_logger.info(f"Creating BareMetalHost: {server_name} in namespace: {target_namespace}")
         
-        # Check if Metal3 API is available
         try:
             custom_api.create_namespaced_custom_object(
                 group="metal3.io",
@@ -530,8 +754,6 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
         patch.status['message'] = f'Successfully created BareMetalHost {server_name}'
         patch.status['bmhName'] = server_name
         patch.status['bmhNamespace'] = target_namespace
-        patch.status['macAddress'] = mac_address
-        patch.status['ipmiAddress'] = ipmi_address
         
         operator_logger.info(f"Successfully completed BareMetalHost creation for: {server_name}")
         
@@ -543,7 +765,6 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
         patch.status['message'] = f'Error: {str(e)}'
         raise kopf.PermanentError(f"Failed to create BareMetalHost: {str(e)}")
 
-# Since you want it immutable, we won't react to updates
 @kopf.on.update('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
 async def update_bmh(spec, status, name, **kwargs):
     """Ignore updates - BareMetalHostGenerators are immutable"""
@@ -551,7 +772,6 @@ async def update_bmh(spec, status, name, **kwargs):
     operator_logger.debug(f"Current status: {status}")
     return status
 
-# Optional: Add a delete handler if you want to clean up BMH when generator is deleted
 @kopf.on.delete('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
 async def delete_bmh(spec, name, namespace, status, **kwargs):
     """Optionally clean up BareMetalHost when generator is deleted"""
@@ -562,20 +782,6 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
         operator_logger.debug(f"BMH location - Name: {status['bmhName']}, Namespace: {status['bmhNamespace']}")
     else:
         operator_logger.warning(f"No associated BareMetalHost found for generator: {name}")
-    
-    # If you want to delete the BMH too, uncomment below:
-    # try:
-    #     operator_logger.info(f"Attempting to delete BareMetalHost: {status['bmhName']}")
-    #     custom_api.delete_namespaced_custom_object(
-    #         group="metal3.io",
-    #         version="v1alpha1",
-    #         namespace=status['bmhNamespace'],
-    #         name=status['bmhName']
-    #     )
-    #     operator_logger.info(f"Successfully deleted BareMetalHost: {status['bmhName']}")
-    # except Exception as e:
-    #     operator_logger.error(f"Failed to delete BareMetalHost: {e}")
-    #     pass
 
 # Cleanup handler to disconnect from UCS Central on shutdown
 @kopf.on.cleanup()
@@ -583,6 +789,15 @@ async def cleanup_fn(**kwargs):
     """Cleanup function called on operator shutdown"""
     operator_logger.info("Operator shutting down, cleaning up resources")
     
+    # Cancel buffer check task
+    if buffer_check_task:
+        buffer_check_task.cancel()
+        try:
+            await buffer_check_task
+        except asyncio.CancelledError:
+            buffer_logger.info("Buffer check task cancelled")
+    
+    # Disconnect from UCS Central
     if ucs_client:
         try:
             ucs_client.disconnect()
@@ -598,7 +813,9 @@ async def cleanup_fn(**kwargs):
 
 if __name__ == "__main__":
     # When running as a Kubernetes operator
-    operator_logger.info("Starting BareMetalHost Generator Operator")
+    operator_logger.info("Starting BareMetalHost Generator Operator with Buffering")
+    operator_logger.info(f"Max available servers: {MAX_AVAILABLE_SERVERS}")
+    operator_logger.info(f"Buffer check interval: {BUFFER_CHECK_INTERVAL}s")
     operator_logger.info(f"Process PID: {os.getpid()}")
     operator_logger.info(f"Python version: {subprocess.check_output(['python', '--version']).decode().strip()}")
     
