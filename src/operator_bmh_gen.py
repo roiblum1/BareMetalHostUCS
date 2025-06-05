@@ -807,9 +807,6 @@ async def cleanup_fn(**kwargs):
     
     operator_logger.info("Cleanup completed")
     
-# ============================================================================
-# Main entry point
-# ============================================================================
 
 if __name__ == "__main__":
     # When running as a Kubernetes operator
