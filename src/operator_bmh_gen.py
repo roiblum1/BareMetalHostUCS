@@ -327,13 +327,18 @@ class UCSClient:
 # ============================================================================
 
 # Load Kubernetes config
+t# ============================================================================
+# Kubernetes Operator with Buffer Management (UPDATED)
+# ============================================================================
+
+# Load Kubernetes config
 try:
-    config.load_incluster_config()  # Use this when running in cluster
+    config.load_incluster_config()
     operator_logger.info("Loaded in-cluster Kubernetes configuration")
 except Exception as e:
     operator_logger.warning(f"Failed to load in-cluster config: {e}")
     operator_logger.info("Falling back to kubeconfig")
-    config.load_kube_config()  # Use this when running locally
+    config.load_kube_config()
 
 # Initialize Kubernetes clients
 k8s_client = client.ApiClient()
@@ -349,11 +354,10 @@ bmh_buffer_lock = asyncio.Lock()
 buffer_check_task = None
 
 def get_available_baremetalhosts() -> List[Dict[str, Any]]:
-    """Get list of BareMetalHosts that are available (not in a cluster)"""
+    """Get list of BareMetalHosts that are available (not provisioned)"""
     buffer_logger.debug("Querying all BareMetalHosts")
     
     try:
-        # Get all BareMetalHosts across all namespaces
         bmhs = custom_api.list_cluster_custom_object(
             group="metal3.io",
             version="v1alpha1",
@@ -363,21 +367,16 @@ def get_available_baremetalhosts() -> List[Dict[str, Any]]:
         available_bmhs = []
         
         for bmh in bmhs.get('items', []):
-            # Check if BMH is available (not provisioned/in use)
-            # Common states: "ready", "available", "provisioning", "provisioned", "deprovisioning", "error"
             status = bmh.get('status', {})
             provisioning_state = status.get('provisioning', {}).get('state', '')
-            operational_status = status.get('operationalStatus', '')
             
-            # Consider a BMH available if it's in "ready" or "available" state
-            # and not provisioned or being provisioned
-            if (provisioning_state in ['', 'ready', 'available', 'inspecting', 'preparing'] and 
-                operational_status != 'detached' and
-                not status.get('provisioning', {}).get('consumer')):
+            # A BMH is available if it's NOT in "provisioned" state
+            # Provisioned means it's already in a cluster
+            if provisioning_state != 'provisioned':
                 available_bmhs.append(bmh)
                 buffer_logger.debug(f"BMH {bmh['metadata']['name']} is available (state: {provisioning_state})")
             else:
-                buffer_logger.debug(f"BMH {bmh['metadata']['name']} is not available (state: {provisioning_state}, consumer: {status.get('provisioning', {}).get('consumer')})")
+                buffer_logger.debug(f"BMH {bmh['metadata']['name']} is in cluster (state: provisioned)")
         
         buffer_logger.info(f"Found {len(available_bmhs)} available BareMetalHosts")
         return available_bmhs
@@ -394,7 +393,6 @@ def get_buffered_generators() -> List[Dict[str, Any]]:
     buffer_logger.debug("Querying buffered BareMetalHostGenerators")
     
     try:
-        # Get all BareMetalHostGenerators across all namespaces
         bmhgens = custom_api.list_cluster_custom_object(
             group="infra.example.com",
             version="v1alpha1",
@@ -423,7 +421,6 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
     buffer_logger.info(f"Processing buffered generator: {name}")
     
     try:
-        # Get the stored server info from status
         status = bmhgen.get('status', {})
         mac_address = status.get('macAddress')
         ipmi_address = status.get('ipmiAddress')
@@ -435,20 +432,18 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
         spec = bmhgen['spec']
         target_namespace = spec.get('namespace', namespace)
         infra_env = spec.get('infraEnv')
-        ipmi_username = spec.get('ipmiUsername', os.getenv('DEFAULT_IPMI_USERNAME', 'admin'))
-        ipmi_password_ref = spec.get('ipmiPasswordSecret', {})
         
-        # Get IPMI password
-        ipmi_password = os.getenv('DEFAULT_IPMI_PASSWORD', 'password')
-        if ipmi_password_ref:
-            secret_name = ipmi_password_ref.get('name')
-            secret_key = ipmi_password_ref.get('key', 'password')
-            
-            try:
-                secret = core_v1.read_namespaced_secret(secret_name, namespace)
-                ipmi_password = base64.b64decode(secret.data[secret_key]).decode()
-            except Exception as e:
-                buffer_logger.warning(f"Could not read IPMI password from secret: {e}")
+        # Get IPMI credentials from environment only
+        ipmi_username = os.getenv('IPMI_USERNAME', 'admin')
+        ipmi_password = os.getenv('IPMI_PASSWORD', 'password')
+        
+        # If credentials are base64 encoded in env, decode them
+        try:
+            ipmi_username = base64.b64decode(ipmi_username).decode()
+            ipmi_password = base64.b64decode(ipmi_password).decode()
+            buffer_logger.debug("Decoded base64 IPMI credentials from environment")
+        except:
+            buffer_logger.debug("Using plain text IPMI credentials from environment")
         
         # Create BMC Secret
         bmc_secret = generate_bmc_secret(
@@ -465,7 +460,7 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
             )
             buffer_logger.info(f"Created BMC secret: {name}-bmc-secret")
         except kubernetes.client.exceptions.ApiException as e:
-            if e.status == 409:  # Already exists
+            if e.status == 409:
                 buffer_logger.debug(f"BMC secret already exists: {name}-bmc-secret")
             else:
                 raise
@@ -497,8 +492,7 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
                 "phase": "Completed",
                 "message": f"Successfully created BareMetalHost {name} (released from buffer)",
                 "bmhName": name,
-                "bmhNamespace": target_namespace,
-                "bufferedAt": None
+                "bmhNamespace": target_namespace
             }
         }
         
@@ -547,7 +541,6 @@ async def buffer_check_loop():
                         buffer_logger.info(f"Releasing buffered generator {i+1}/{slots_available}: {bmhgen['metadata']['name']}")
                         await process_buffered_generator(bmhgen)
                         
-                        # Small delay between releases to avoid overwhelming the system
                         if i < slots_available - 1:
                             await asyncio.sleep(2)
                 else:
@@ -556,38 +549,44 @@ async def buffer_check_loop():
         except Exception as e:
             buffer_logger.error(f"Error in buffer check loop: {str(e)}")
             buffer_logger.exception("Full exception details:")
-            # Continue loop even if error occurs
+
+def get_ucs_connection():
+    """Get UCS connection, reconnecting if needed"""
+    global ucs_client
+    
+    if not ucs_client:
+        raise RuntimeError("UCS client not initialized")
+    
+    # Always reconnect to avoid timeout issues
+    try:
+        if ucs_client.ucsc_handle:
+            ucs_client.ucsc_handle.logout()
+    except:
+        pass
+    
+    ucs_client.connect()
+    return ucs_client
 
 @kopf.on.startup()
-def configure(settings: kopf.OperatorSettings, **_):
+async def configure(settings: kopf.OperatorSettings, **_):
     """Configure operator settings"""
     operator_logger.info("Starting operator configuration")
     
     settings.persistence.finalizer = 'bmhgenerator.infra.example.com/finalizer'
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
-    operator_logger.debug("Configured operator persistence settings")
     
-    # Initialize UCS client with both Central and Manager credentials
+    # Initialize UCS client
     global ucs_client
     
-    # UCS Central credentials
     ucs_central_ip = os.getenv('UCS_CENTRAL_IP')
     central_username = os.getenv('UCS_CENTRAL_USERNAME', 'admin')
     central_password = os.getenv('UCS_CENTRAL_PASSWORD')
-    
-    # UCS Manager credentials (used for all managers)
     manager_username = os.getenv('UCS_MANAGER_USERNAME', 'admin')
     manager_password = os.getenv('UCS_MANAGER_PASSWORD')
     
-    # Validate required environment variables
     if not all([ucs_central_ip, central_password, manager_password]):
         operator_logger.error("Missing required UCS environment variables")
-        operator_logger.error("Required: UCS_CENTRAL_IP, UCS_CENTRAL_PASSWORD, UCS_MANAGER_PASSWORD")
-        raise ValueError("Missing required UCS configuration. Please set environment variables.")
-    
-    operator_logger.info(f"Initializing UCS client with UCS Central IP: {ucs_central_ip}")
-    operator_logger.debug(f"UCS Central username: {central_username}")
-    operator_logger.debug(f"UCS Manager username: {manager_username}")
+        raise ValueError("Missing required UCS configuration")
     
     ucs_client = UCSClient(
         ucs_central_ip=ucs_central_ip,
@@ -597,65 +596,74 @@ def configure(settings: kopf.OperatorSettings, **_):
         manager_password=manager_password
     )
     
-    # Pre-connect to UCS Central during startup
+    # Check if we're already over limit
     try:
-        ucs_client.connect()
-        operator_logger.info("Successfully connected to UCS Central during startup")
+        available_bmhs = get_available_baremetalhosts()
+        available_count = len(available_bmhs)
+        
+        if available_count > MAX_AVAILABLE_SERVERS:
+            operator_logger.warning(f"Starting with {available_count} available servers, exceeds limit of {MAX_AVAILABLE_SERVERS}")
+            operator_logger.warning("New servers will be buffered until available count drops below limit")
     except Exception as e:
-        operator_logger.error(f"Failed to connect to UCS Central during startup: {e}")
-        # Continue anyway - connection will be retried when needed
+        operator_logger.error(f"Error checking initial BMH count: {e}")
     
-    # Start buffer check loop
+    # Setup asyncio event loop and start buffer check task
     global buffer_check_task
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
     buffer_check_task = asyncio.create_task(buffer_check_loop())
     buffer_logger.info("Started buffer check background task")
     
     operator_logger.info("Operator configuration completed successfully")
 
 @kopf.on.create('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
-async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kopf.Patch, **kwargs):
+async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
     """Handle BareMetalHostGenerator creation"""
     
     operator_logger.info(f"Processing BareMetalHostGenerator: {name} in namespace: {namespace}")
-    operator_logger.debug(f"Spec: {spec}")
     
-    # Extract spec fields
     server_name = spec.get('serverName', name)
     target_namespace = spec.get('namespace', namespace)
     infra_env = spec.get('infraEnv')
     
-    operator_logger.info(f"Server name: {server_name}, Target namespace: {target_namespace}, InfraEnv: {infra_env}")
-    
-    # Validate required fields
     if not infra_env:
-        error_msg = "infraEnv is required in spec"
-        operator_logger.error(error_msg)
-        patch.status['phase'] = 'Failed'
-        patch.status['message'] = error_msg
-        raise kopf.PermanentError(error_msg)
+        raise kopf.PermanentError("infraEnv is required in spec")
     
-    # Check if UCS client is initialized
-    if not ucs_client:
-        error_msg = "UCS client not initialized. Check environment variables."
-        operator_logger.error(error_msg)
-        patch.status['phase'] = 'Failed'
-        patch.status['message'] = error_msg
-        raise kopf.PermanentError(error_msg)
+    # Initial status
+    status_update = {
+        "phase": "Processing",
+        "message": f"Looking up server {server_name} in UCS Central"
+    }
     
     try:
-        # Update status to show we're processing
-        patch.status['phase'] = 'Processing'
-        patch.status['message'] = f'Looking up server {server_name} in UCS Central'
-        operator_logger.info(f"Status updated to Processing for {name}")
-        
-        # Get server info from UCS (this now queries UCS Central)
+        # Update status
+        custom_api.patch_namespaced_custom_object_status(
+            group="infra.example.com",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="baremetalhostgenerators",
+            name=name,
+            body={"status": status_update}
+        )
+    except Exception as e:
+        operator_logger.warning(f"Could not update initial status: {e}")
+    
+    try:
+        # Get UCS connection (handles reconnection)
+        ucs = get_ucs_connection()
         operator_logger.info(f"Querying UCS Central for server: {server_name}")
-        mac_address, ipmi_address = ucs_client.get_server_info(server_name)
+        mac_address, ipmi_address = ucs.get_server_info(server_name)
         operator_logger.info(f"UCS query successful - MAC: {mac_address}, IPMI: {ipmi_address}")
         
-        # Store server info in status for later use
-        patch.status['macAddress'] = mac_address
-        patch.status['ipmiAddress'] = ipmi_address
+        # Disconnect after use to avoid timeout
+        try:
+            ucs.disconnect()
+        except:
+            pass
         
         # Check if we should buffer or create immediately
         async with bmh_buffer_lock:
@@ -666,36 +674,39 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
             
             if available_count >= MAX_AVAILABLE_SERVERS:
                 # Buffer this server
-                patch.status['phase'] = 'Buffered'
-                patch.status['message'] = f'Server buffered (available: {available_count}/{MAX_AVAILABLE_SERVERS})'
-                patch.status['bufferedAt'] = datetime.now().isoformat()
+                status_update = {
+                    "phase": "Buffered",
+                    "message": f"Server buffered (available: {available_count}/{MAX_AVAILABLE_SERVERS})",
+                    "bufferedAt": datetime.now().isoformat(),
+                    "macAddress": mac_address,
+                    "ipmiAddress": ipmi_address
+                }
                 
-                buffer_logger.info(f"Buffering server {server_name} - limit reached ({available_count}/{MAX_AVAILABLE_SERVERS})")
-                return  # Exit here, server will be processed later by buffer check loop
-            
-            # We have room, create immediately
-            buffer_logger.info(f"Creating BareMetalHost immediately - room available ({available_count}/{MAX_AVAILABLE_SERVERS})")
+                custom_api.patch_namespaced_custom_object_status(
+                    group="infra.example.com",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="baremetalhostgenerators",
+                    name=name,
+                    body={"status": status_update}
+                )
+                
+                buffer_logger.info(f"Buffering server {server_name} - limit reached")
+                return
         
-        # Continue with immediate creation
-        ipmi_username = spec.get('ipmiUsername', os.getenv('DEFAULT_IPMI_USERNAME', 'admin'))
-        ipmi_password_ref = spec.get('ipmiPasswordSecret', {})
+        # Get IPMI credentials from environment only
+        ipmi_username = os.getenv('IPMI_USERNAME', 'admin')
+        ipmi_password = os.getenv('IPMI_PASSWORD', 'password')
         
-        # Get IPMI password
-        ipmi_password = os.getenv('DEFAULT_IPMI_PASSWORD', 'password')
-        if ipmi_password_ref:
-            secret_name = ipmi_password_ref.get('name')
-            secret_key = ipmi_password_ref.get('key', 'password')
-            
-            try:
-                secret = core_v1.read_namespaced_secret(secret_name, namespace)
-                ipmi_password = base64.b64decode(secret.data[secret_key]).decode()
-                operator_logger.info(f"Successfully read IPMI password from secret: {secret_name}")
-            except Exception as e:
-                operator_logger.warning(f"Could not read IPMI password from secret: {e}")
-                operator_logger.info("Using default IPMI password")
+        # If credentials are base64 encoded in env, decode them
+        try:
+            ipmi_username = base64.b64decode(ipmi_username).decode()
+            ipmi_password = base64.b64decode(ipmi_password).decode()
+            operator_logger.debug("Decoded base64 IPMI credentials from environment")
+        except:
+            operator_logger.debug("Using plain text IPMI credentials from environment")
         
-        # Create BMC Secret first
-        operator_logger.info(f"Creating BMC secret for {server_name}")
+        # Create BMC Secret
         bmc_secret = generate_bmc_secret(
             name=server_name,
             namespace=target_namespace,
@@ -708,16 +719,14 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
                 namespace=target_namespace,
                 body=bmc_secret
             )
-            operator_logger.info(f"Successfully created BMC secret: {server_name}-bmc-secret")
+            operator_logger.info(f"Created BMC secret: {server_name}-bmc-secret")
         except kubernetes.client.exceptions.ApiException as e:
-            if e.status == 409:  # Already exists
+            if e.status == 409:
                 operator_logger.info(f"BMC secret already exists: {server_name}-bmc-secret")
             else:
-                operator_logger.error(f"Failed to create BMC secret: {e}")
                 raise
         
-        # Generate BareMetalHost
-        operator_logger.info(f"Generating BareMetalHost for {server_name}")
+        # Generate and create BareMetalHost
         bmh = generate_baremetal_host(
             name=server_name,
             namespace=target_namespace,
@@ -729,9 +738,6 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
             labels=spec.get('labels', {})
         )
         
-        # Create BareMetalHost
-        operator_logger.info(f"Creating BareMetalHost: {server_name} in namespace: {target_namespace}")
-        
         try:
             custom_api.create_namespaced_custom_object(
                 group="metal3.io",
@@ -740,7 +746,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
                 plural="baremetalhosts",
                 body=bmh
             )
-            operator_logger.info(f"Successfully created BareMetalHost: {server_name}")
+            operator_logger.info(f"Created BareMetalHost: {server_name}")
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 404:
                 operator_logger.warning("Metal3 CRD not found - simulating creation for testing")
@@ -750,46 +756,65 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, patch: kop
                 raise
         
         # Update status to success
-        patch.status['phase'] = 'Completed'
-        patch.status['message'] = f'Successfully created BareMetalHost {server_name}'
-        patch.status['bmhName'] = server_name
-        patch.status['bmhNamespace'] = target_namespace
+        status_update = {
+            "phase": "Completed",
+            "message": f"Successfully created BareMetalHost {server_name}",
+            "bmhName": server_name,
+            "bmhNamespace": target_namespace
+        }
+        
+        custom_api.patch_namespaced_custom_object_status(
+            group="infra.example.com",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="baremetalhostgenerators",
+            name=name,
+            body={"status": status_update}
+        )
         
         operator_logger.info(f"Successfully completed BareMetalHost creation for: {server_name}")
         
     except Exception as e:
         operator_logger.error(f"Failed to create BareMetalHost: {str(e)}")
-        operator_logger.exception("Full exception details:")
         
-        patch.status['phase'] = 'Failed'
-        patch.status['message'] = f'Error: {str(e)}'
+        status_update = {
+            "phase": "Failed",
+            "message": f"Error: {str(e)}"
+        }
+        
+        try:
+            custom_api.patch_namespaced_custom_object_status(
+                group="infra.example.com",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="baremetalhostgenerators",
+                name=name,
+                body={"status": status_update}
+            )
+        except:
+            pass
+            
         raise kopf.PermanentError(f"Failed to create BareMetalHost: {str(e)}")
 
 @kopf.on.update('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
 async def update_bmh(spec, status, name, **kwargs):
     """Ignore updates - BareMetalHostGenerators are immutable"""
     operator_logger.info(f"BareMetalHostGenerator {name} update ignored - resource is immutable")
-    operator_logger.debug(f"Current status: {status}")
-    return status
+    return
 
 @kopf.on.delete('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
 async def delete_bmh(spec, name, namespace, status, **kwargs):
-    """Optionally clean up BareMetalHost when generator is deleted"""
+    """Clean up BareMetalHost when generator is deleted"""
     operator_logger.info(f"Processing deletion of BareMetalHostGenerator: {name}")
     
     if status.get('bmhName') and status.get('bmhNamespace'):
-        operator_logger.info(f"BareMetalHostGenerator deleted, but keeping BareMetalHost: {status['bmhName']}")
-        operator_logger.debug(f"BMH location - Name: {status['bmhName']}, Namespace: {status['bmhNamespace']}")
-    else:
-        operator_logger.warning(f"No associated BareMetalHost found for generator: {name}")
+        operator_logger.info(f"BareMetalHostGenerator deleted, keeping BareMetalHost: {status['bmhName']}")
 
-# Cleanup handler to disconnect from UCS Central on shutdown
 @kopf.on.cleanup()
 async def cleanup_fn(**kwargs):
     """Cleanup function called on operator shutdown"""
-    operator_logger.info("Operator shutting down, cleaning up resources")
+    operator_logger.info("Operator shutting down")
     
-    # Cancel buffer check task
     if buffer_check_task:
         buffer_check_task.cancel()
         try:
@@ -797,28 +822,21 @@ async def cleanup_fn(**kwargs):
         except asyncio.CancelledError:
             buffer_logger.info("Buffer check task cancelled")
     
-    # Disconnect from UCS Central
     if ucs_client:
         try:
             ucs_client.disconnect()
-            operator_logger.info("Successfully disconnected from UCS Central")
         except Exception as e:
             operator_logger.warning(f"Error disconnecting from UCS Central: {e}")
     
     operator_logger.info("Cleanup completed")
-    
 
 if __name__ == "__main__":
-    # When running as a Kubernetes operator
     operator_logger.info("Starting BareMetalHost Generator Operator with Buffering")
     operator_logger.info(f"Max available servers: {MAX_AVAILABLE_SERVERS}")
     operator_logger.info(f"Buffer check interval: {BUFFER_CHECK_INTERVAL}s")
-    operator_logger.info(f"Process PID: {os.getpid()}")
-    operator_logger.info(f"Python version: {subprocess.check_output(['python', '--version']).decode().strip()}")
     
     try:
         kopf.run()
     except Exception as e:
         operator_logger.critical(f"Operator crashed: {str(e)}")
-        operator_logger.exception("Full crash details:")
         raise
