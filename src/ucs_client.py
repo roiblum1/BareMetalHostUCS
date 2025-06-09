@@ -1,10 +1,11 @@
 import logging
-from ucscsdk.ucschandle import UcscHandle
-from ucsmsdk.ucshandle import UcsHandle
 
-# Assuming you have a logger configured
-ucs_logger = logging.getLogger(__name__)
-
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+)
+logger = logging.getLogger(__name__)
+ucs_logger = logging.getLogger('ucs_client')
 class UCSClient:
     def __init__(self, ucs_central_ip=None, central_username=None, central_password=None, 
                  manager_username=None, manager_password=None):
@@ -173,32 +174,3 @@ class UCSClient:
                 ucs_logger.info("Disconnected from UCS Central")
             except Exception as e:
                 ucs_logger.warning(f"Error during UCS Central logout: {str(e)}")
-
-
-# Example usage:
-if __name__ == "__main__":
-    # Initialize the client with both UCS Central and UCS Manager credentials
-    client = UCSClient(
-        ucs_central_ip='usc_client_ip',
-        central_username='username_central',
-        central_password='password_central',
-        manager_username='username_manager', 
-        manager_password='password_manager'
-    )
-    
-    try:
-        # Connect to UCS Central
-        client.connect()
-        
-        # Get server information
-        node_name = input("Enter the node name to search for: ").strip()
-        mac_address, kvm_ip = client.get_server_info(node_name)
-        
-        print(f"Server: {node_name}")
-        print(f"MAC Address: {mac_address}")
-        print(f"KVM IP: {kvm_ip}")
-        
-    except Exception as e:
-        print(f"Error: {str(e)}")
-    finally:
-        client.disconnect()
