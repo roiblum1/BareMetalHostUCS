@@ -1,19 +1,25 @@
-import re
-import ipaddress
-import base64
-import yaml
-import os
-import logging
-import subprocess
 import asyncio
+import base64
+import ipaddress
+import json
+import logging
+import os
+import re
+import subprocess
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+
 import kopf
 import kubernetes
+import requests
+import yaml
 from kubernetes import client, config
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-from ucscsdk.ucschandle import UcscHandle
-from ucsmsdk.ucshandle import UcsHandle
 from ucsmsdk.mometa.compute.ComputeRackUnit import ComputeRackUnit
+from ucsmsdk.ucshandle import UcsHandle
+from ucscsdk.ucschandle import UcscHandle
+from urllib3 import disable_warnings
+from urllib3.exceptions import InsecureRequestWarning
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -152,174 +158,486 @@ def generate_bmc_secret(
 # UCS Client Class (from ucs_client.py)
 # ============================================================================
 
-class UCSClient:
-    def __init__(self, ucs_central_ip=None, central_username=None, central_password=None, 
-                 manager_username=None, manager_password=None):
+class ServerType(Enum):
+    """Enum for server types based on naming convention"""
+    HP = "hp"
+    CISCO = "cisco"
+    DELL = "dell"
+    UNKNOWN = "unknown"
+
+
+class UnifiedServerClient:
+    """
+    Unified client for managing HP, Cisco UCS, and Dell servers.
+    Automatically detects server type based on naming convention and searches efficiently.
+    """
+    
+    def __init__(self, 
+                 # HP OneView credentials
+                 oneview_ip=None, 
+                 oneview_username=None, 
+                 oneview_password=None,
+                 # UCS Central/Manager credentials
+                 ucs_central_ip=None, 
+                 central_username=None, 
+                 central_password=None,
+                 manager_username=None, 
+                 manager_password=None,
+                 # Dell OME credentials
+                 ome_ip=None, 
+                 ome_username=None, 
+                 ome_password=None):
+        """
+        Initialize unified server client with credentials for all systems.
+        
+        Args:
+            oneview_ip: HP OneView IP address
+            oneview_username: HP OneView username
+            oneview_password: HP OneView password
+            ucs_central_ip: Cisco UCS Central IP address
+            central_username: UCS Central username
+            central_password: UCS Central password
+            manager_username: UCS Manager username
+            manager_password: UCS Manager password
+            ome_ip: Dell OpenManage Enterprise IP address
+            ome_username: Dell OME username
+            ome_password: Dell OME password
+        """
+        # HP OneView configuration
+        self.oneview_ip = oneview_ip
+        self.oneview_username = oneview_username
+        self.oneview_password = oneview_password
+        self.oneview_session = None
+        self.oneview_auth_token = None
+        self.oneview_base_url = f"https://{oneview_ip}" if oneview_ip else None
+        
+        # UCS configuration
         self.ucs_central_ip = ucs_central_ip
         self.central_username = central_username
         self.central_password = central_password
         self.manager_username = manager_username
         self.manager_password = manager_password
         self.ucsc_handle = None
-        ucs_logger.info(f"Initialized UCS client for UCS Central: {ucs_central_ip}")
         
-    def connect(self):
-        """Connect to UCS Central"""
-        ucs_logger.info(f"Attempting to connect to UCS Central at {self.ucs_central_ip}")
+        # Dell OME configuration
+        self.ome_ip = ome_ip
+        self.ome_username = ome_username
+        self.ome_password = ome_password
+        self.ome_session = None
+        self.ome_auth_token = None
+        self.ome_base_url = f"https://{ome_ip}/api" if ome_ip else None
         
-        if not all([self.ucs_central_ip, self.central_username, self.central_password, 
-                   self.manager_username, self.manager_password]):
-            ucs_logger.error("Missing required UCS connection parameters")
-            raise ValueError("UCS Central IP, central credentials, and manager credentials must be provided")
+        # Cache for server data to improve performance
+        self._hp_servers_cache = None
+        self._ucs_servers_cache = None
+        self._dell_servers_cache = None
         
-        try:
-            self.ucsc_handle = UcscHandle(self.ucs_central_ip, self.central_username, self.central_password)
-            self.ucsc_handle.login()
-            ucs_logger.info(f"Successfully connected to UCS Central at {self.ucs_central_ip}")
-        except Exception as e:
-            ucs_logger.error(f"Failed to connect to UCS Central: {str(e)}")
-            raise
-        
-    def get_all_servers(self):
-        """Query all logical servers from UCS Central"""
-        ucs_logger.debug("Querying all logical servers")
-        
-        if not self.ucsc_handle:
-            ucs_logger.error("Not connected to UCS Central")
-            raise RuntimeError("Not connected to UCS Central. Call connect() first.")
-        
-        try:
-            servers = self.ucsc_handle.query_classid("lsServer")
-            ucs_logger.info(f"Found {len(servers)} servers in UCS Central")
-            return servers
-        except Exception as e:
-            ucs_logger.error(f"Failed to query servers: {str(e)}")
-            raise
+        logger.info("Initialized UnifiedServerClient")
     
-    def get_server_info(self, server_name):
-        """Get server MAC and IPMI address by server name"""
-        ucs_logger.info(f"Getting server info for: {server_name}")
+    def detect_server_type(self, server_name: str) -> ServerType:
+        """
+        Detect server type based on naming convention.
         
-        if not self.ucsc_handle:
-            ucs_logger.debug("Not connected, attempting to connect")
-            self.connect()
+        Args:
+            server_name: Name of the server
             
-        servers = self.get_all_servers()
-        mac_address, kvm_ip = self.get_ucs_info_for_node(server_name, servers)
+        Returns:
+            ServerType enum value
+        """
+        server_name_lower = server_name.lower()
         
-        if not mac_address or not kvm_ip:
-            ucs_logger.error(f"Could not find complete info for server {server_name}")
-            raise ValueError(f"Could not find server {server_name} or retrieve its information")
-        
-        ucs_logger.info(f"Retrieved info for {server_name} - MAC: {mac_address}, KVM IP: {kvm_ip}")
-        return mac_address, kvm_ip
+        if 'rf' in server_name_lower:
+            logger.debug(f"Detected HP server based on 'rf' in name: {server_name}")
+            return ServerType.HP
+        elif 'ome' in server_name_lower:
+            logger.debug(f"Detected Dell server based on 'ome' in name: {server_name}")
+            return ServerType.DELL
+        else:
+            # Default to Cisco for basic names
+            logger.debug(f"Defaulting to Cisco server for: {server_name}")
+            return ServerType.CISCO
     
-    def get_ucs_info_for_node(self, node_name, servers):
-        """Extract UCS information for a specific node"""
-        ucs_logger.info(f"Processing node: {node_name}")
+    def get_server_info(self, server_name: str) -> Tuple[str, str]:
+        """
+        Get server MAC address and management IP based on server name.
+        Automatically detects server type and searches efficiently.
         
-        for server in servers:
-            ucs_logger.debug(f"Checking server: {server.name} (DN: {server.dn})")
+        Args:
+            server_name: Name of the server
             
-            if node_name.upper() == server.name.upper():
-                ucs_logger.info(f"Found matching server: {server.name}")
+        Returns:
+            Tuple of (mac_address, management_ip)
+        """
+        logger.info(f"Getting server info for: {server_name}")
+        
+        # Detect server type based on naming convention
+        server_type = self.detect_server_type(server_name)
+        
+        # Define search order based on detected type
+        if server_type == ServerType.HP:
+            search_order = [ServerType.HP, ServerType.CISCO, ServerType.DELL]
+        elif server_type == ServerType.DELL:
+            search_order = [ServerType.DELL, ServerType.CISCO, ServerType.HP]
+        else:  # CISCO
+            search_order = [ServerType.CISCO, ServerType.HP, ServerType.DELL]
+        
+        # Try each system in order
+        for system in search_order:
+            try:
+                logger.info(f"Searching in {system.value} system...")
+                
+                if system == ServerType.HP:
+                    if self._is_hp_configured():
+                        mac, ip = self._get_hp_server_info(server_name)
+                        if mac and ip:
+                            logger.info(f"Found server in HP OneView")
+                            return mac, ip
+                            
+                elif system == ServerType.CISCO:
+                    if self._is_ucs_configured():
+                        mac, ip = self._get_ucs_server_info(server_name)
+                        if mac and ip:
+                            logger.info(f"Found server in Cisco UCS")
+                            return mac, ip
+                            
+                elif system == ServerType.DELL:
+                    if self._is_dell_configured():
+                        mac, ip = self._get_dell_server_info(server_name)
+                        if mac and ip:
+                            logger.info(f"Found server in Dell OME")
+                            return mac, ip
+                            
+            except Exception as e:
+                logger.warning(f"Error searching in {system.value} system: {str(e)}")
+                continue
+        
+        # If we get here, server was not found in any system
+        raise ValueError(f"Server {server_name} not found in any configured system")
+    
+    # HP OneView Methods
+    def _is_hp_configured(self) -> bool:
+        """Check if HP OneView is configured"""
+        return all([self.oneview_ip, self.oneview_username, self.oneview_password])
+    
+    def _ensure_hp_connected(self):
+        """Ensure connection to HP OneView"""
+        if not self.oneview_session or not self.oneview_auth_token:
+            logger.info(f"Connecting to HP OneView at {self.oneview_ip}")
+            
+            self.oneview_session = requests.Session()
+            self.oneview_session.verify = False
+            
+            auth_url = f"{self.oneview_base_url}/rest/login-sessions"
+            auth_data = {
+                "userName": self.oneview_username,
+                "password": self.oneview_password
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "X-API-Version": "2000"
+            }
+            
+            response = self.oneview_session.post(auth_url, json=auth_data, headers=headers)
+            response.raise_for_status()
+            
+            self.oneview_auth_token = response.json().get('sessionID')
+            self.oneview_session.headers.update({
+                'Auth': self.oneview_auth_token,
+                'X-API-Version': '2000'
+            })
+            
+            logger.info("Successfully connected to HP OneView")
+    
+    def _get_hp_server_info(self, server_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """Get HP server info"""
+        self._ensure_hp_connected()
+        
+        # Use cache if available
+        if self._hp_servers_cache is None:
+            servers_url = f"{self.oneview_base_url}/rest/server-hardware"
+            response = self.oneview_session.get(servers_url)
+            response.raise_for_status()
+            self._hp_servers_cache = response.json().get('members', [])
+        
+        # Search for server
+        for server in self._hp_servers_cache:
+            if (server_name.upper() == server.get('name', '').upper() or 
+                server_name.upper() == server.get('serialNumber', '').upper()):
+                
+                # Get iLO IP
+                ilo_ip = ""
+                mp_host_info = server.get('mpHostInfo', {})
+                mp_addresses = mp_host_info.get('mpIpAddresses', [])
+                
+                for addr_info in mp_addresses:
+                    if addr_info.get('type') in ['DHCP', 'Static']:
+                        ilo_ip = addr_info.get('address', '')
+                        if ilo_ip:
+                            break
+                
+                # Get MAC address
+                mac_address = self._get_hp_mac_address(server.get('uri'))
+                
+                if mac_address and ilo_ip:
+                    return mac_address, ilo_ip
+        
+        return None, None
+    
+    def _get_hp_mac_address(self, server_uri: str) -> Optional[str]:
+        """Get HP server MAC address"""
+        try:
+            response = self.oneview_session.get(f"{self.oneview_base_url}{server_uri}")
+            response.raise_for_status()
+            
+            server_data = response.json()
+            port_map = server_data.get('portMap', {})
+            device_slots = port_map.get('deviceSlots', [])
+            
+            for slot in device_slots:
+                for port in slot.get('physicalPorts', []):
+                    mac = port.get('mac', '')
+                    if mac and mac != '00:00:00:00:00:00':
+                        return mac
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting HP MAC address: {str(e)}")
+            return None
+    
+    # Cisco UCS Methods
+    def _is_ucs_configured(self) -> bool:
+        """Check if UCS is configured"""
+        return all([self.ucs_central_ip, self.central_username, self.central_password,
+                   self.manager_username, self.manager_password])
+    
+    def _ensure_ucs_connected(self):
+        """Ensure connection to UCS Central"""
+        if not self.ucsc_handle:
+            logger.info(f"Connecting to UCS Central at {self.ucs_central_ip}")
+            
+            try:
+                # Import UCS SDK modules here to avoid import errors if not installed
+                from ucscsdk.ucschandle import UcscHandle
+                from ucsmsdk.ucshandle import UcsHandle
+                
+                self.ucsc_handle = UcscHandle(self.ucs_central_ip, self.central_username, 
+                                             self.central_password)
+                self.ucsc_handle.login()
+                
+                # Store class references for later use
+                self._UcsHandle = UcsHandle
+                
+                logger.info("Successfully connected to UCS Central")
+                
+            except ImportError:
+                logger.error("UCS SDK not installed. Install with: pip install ucsmsdk ucscsdk")
+                raise
+    
+    def _get_ucs_server_info(self, server_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """Get UCS server info"""
+        self._ensure_ucs_connected()
+        
+        # Use cache if available
+        if self._ucs_servers_cache is None:
+            self._ucs_servers_cache = self.ucsc_handle.query_classid("lsServer")
+        
+        for server in self._ucs_servers_cache:
+            if server_name.upper() == server.name.upper():
                 domain = server.domain
-                rack_id = server.pn_dn.split("-")[-1] if hasattr(server, 'pn_dn') else ""
                 ucsm_handle = None
                 
                 try:
-                    ucs_logger.debug(f"Connecting to UCS Manager domain: {domain}")
-                    ucsm_handle = UcsHandle(domain, self.manager_username, self.manager_password)
+                    # Connect to UCS Manager
+                    ucsm_handle = self._UcsHandle(domain, self.manager_username, 
+                                                 self.manager_password)
                     ucsm_handle.login()
                     
-                    # Get server details from UCS Central (not UCS Manager)
+                    # Get server details
                     server_details = self.ucsc_handle.query_dn(server.dn)
                     if not server_details:
-                        ucs_logger.warning(f"No server details found for {node_name}")
                         continue
                     
-                    ucs_logger.debug(f"Retrieved server details for DN: {server.dn}")
+                    # Get KVM IP
+                    kvm_ip = ""
+                    mgmt_interfaces = ucsm_handle.query_children(in_mo=server_details, 
+                                                                class_id="VnicIpV4PooledAddr")
+                    for iface in mgmt_interfaces:
+                        if hasattr(iface, 'addr') and iface.addr:
+                            kvm_ip = str(iface.addr)
+                            break
                     
-                    kvm_ip = self._get_kvm_ip(ucsm_handle, server_details)
-                    mac_address = self._get_mac_address(ucsm_handle, server_details)
+                    # Get MAC address
+                    mac_address = ""
+                    adapters = ucsm_handle.query_children(in_mo=server_details, 
+                                                         class_id="VnicEther")
+                    if adapters:
+                        sorted_adapters = sorted(adapters, key=lambda x: x.name[3:])
+                        if sorted_adapters and hasattr(sorted_adapters[0], 'addr'):
+                            mac_address = sorted_adapters[0].addr
                     
-                    ucs_logger.info(f"Successfully retrieved info - MAC: {mac_address}, KVM IP: {kvm_ip}")
-                    return mac_address, kvm_ip
-                    
-                except Exception as e:
-                    ucs_logger.error(f"Error retrieving data for {node_name}: {str(e)}")
-                    ucs_logger.exception("Full exception details:")
-                    
+                    if mac_address and kvm_ip:
+                        return mac_address, kvm_ip
+                        
                 finally:
                     if ucsm_handle:
                         try:
                             ucsm_handle.logout()
-                            ucs_logger.debug(f"Logged out from domain: {domain}")
-                        except Exception as e:
-                            ucs_logger.warning(f"Failed to logout from domain {domain}: {str(e)}")
+                        except:
+                            pass
         
-        ucs_logger.warning(f"No matching server found for node: {node_name}")
         return None, None
     
-    def _get_kvm_ip(self, ucsm_handle, server_details):
-        """Extract KVM IP address from VnicIpV4PooledAddr"""
-        ucs_logger.debug("Querying VnicIpV4PooledAddr for KVM IP")
-        
-        try:
-            mgmt_interfaces = ucsm_handle.query_children(in_mo=server_details, class_id="VnicIpV4PooledAddr")
-            ucs_logger.debug(f"Found {len(mgmt_interfaces)} IP pool addresses")
-            
-            kvm_ip = ""
-            for iface in mgmt_interfaces:
-                if hasattr(iface, 'addr') and iface.addr:
-                    kvm_ip = str(iface.addr)
-                    ucs_logger.info(f"Found KVM IP: {kvm_ip}")
-                    break
-            
-            if not kvm_ip:
-                ucs_logger.warning("No KVM IP found in VnicIpV4PooledAddr")
-                
-            return kvm_ip
-            
-        except Exception as e:
-            ucs_logger.error(f"Error retrieving KVM IP: {str(e)}")
-            return ""
+    # Dell OME Methods
+    def _is_dell_configured(self) -> bool:
+        """Check if Dell OME is configured"""
+        return all([self.ome_ip, self.ome_username, self.ome_password])
     
-    def _get_mac_address(self, ucsm_handle, server_details):
-        """Extract MAC address from VnicEther (sorted by name)"""
-        ucs_logger.debug("Querying VnicEther for MAC address")
-        
-        try:
-            adapters = ucsm_handle.query_children(in_mo=server_details, class_id="VnicEther")
-            ucs_logger.debug(f"Found {len(adapters)} VnicEther adapters")
+    def _ensure_dell_connected(self):
+        """Ensure connection to Dell OME"""
+        if not self.ome_session or not self.ome_auth_token:
+            logger.info(f"Connecting to Dell OME at {self.ome_ip}")
             
-            mac_address = ""
-            if adapters:
-                # Sort adapters by name (same as in your working script)
-                sorted_adapters = sorted(adapters, key=lambda x: x.name[3:])
+            self.ome_session = requests.Session()
+            self.ome_session.verify = False
+            
+            auth_url = f"{self.ome_base_url}/SessionService/Sessions"
+            auth_data = {
+                "UserName": self.ome_username,
+                "Password": self.ome_password,
+                "SessionType": "API"
+            }
+            
+            response = self.ome_session.post(auth_url, json=auth_data)
+            response.raise_for_status()
+            
+            self.ome_auth_token = response.headers.get('X-Auth-Token')
+            self.ome_session.headers.update({'X-Auth-Token': self.ome_auth_token})
+            
+            logger.info("Successfully connected to Dell OME")
+    
+    def _get_dell_server_info(self, server_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """Get Dell server info"""
+        self._ensure_dell_connected()
+        
+        # Use cache if available
+        if self._dell_servers_cache is None:
+            devices_url = f"{self.ome_base_url}/DeviceService/Devices"
+            params = {
+                '$filter': 'Type eq 1000',  # 1000 = Server type
+                '$top': 5000
+            }
+            
+            response = self.ome_session.get(devices_url, params=params)
+            response.raise_for_status()
+            self._dell_servers_cache = response.json().get('value', [])
+        
+        # Search for server
+        for server in self._dell_servers_cache:
+            server_display_name = server.get('DeviceName', '')
+            server_service_tag = server.get('DeviceServiceTag', '')
+            
+            if (server_name.upper() == server_display_name.upper() or 
+                server_name.upper() == server_service_tag.upper()):
                 
-                if sorted_adapters and hasattr(sorted_adapters[0], 'addr'):
-                    mac_address = sorted_adapters[0].addr
-                    ucs_logger.info(f"Found MAC address: {mac_address}")
-                else:
-                    ucs_logger.warning("No MAC address found in first VnicEther adapter")
-            else:
-                ucs_logger.warning("No VnicEther adapters found")
+                # Get iDRAC IP
+                idrac_ip = ""
+                device_mgmt = server.get('DeviceManagement', [])
                 
-            return mac_address if mac_address else "No MAC address found"
+                for mgmt in device_mgmt:
+                    if mgmt.get('ManagementType') == 2:  # 2 = iDRAC
+                        network_address = mgmt.get('NetworkAddress', '')
+                        if network_address:
+                            idrac_ip = network_address
+                            break
+                
+                if not idrac_ip and server.get('ManagementIP'):
+                    idrac_ip = server.get('ManagementIP')
+                
+                # Get MAC address
+                mac_address = self._get_dell_mac_address(server.get('Id'))
+                
+                if mac_address and idrac_ip:
+                    return mac_address, idrac_ip
+        
+        return None, None
+    
+    def _get_dell_mac_address(self, server_id: int) -> Optional[str]:
+        """Get Dell server MAC address"""
+        try:
+            interfaces_url = f"{self.ome_base_url}/DeviceService/Devices({server_id})/InventoryDetails('networkInterfaces')"
+            
+            response = self.ome_session.get(interfaces_url)
+            response.raise_for_status()
+            
+            interfaces_data = response.json()
+            interfaces = interfaces_data.get('InventoryInfo', [])
+            
+            if interfaces:
+                sorted_interfaces = sorted(interfaces, key=lambda x: x.get('Name', ''))
+                
+                for interface in sorted_interfaces:
+                    mac = interface.get('MacAddress', '')
+                    if mac and mac != '00:00:00:00:00:00':
+                        return mac
+            
+            return None
             
         except Exception as e:
-            ucs_logger.error(f"Error retrieving MAC address: {str(e)}")
-            return "No MAC address found"
+            logger.error(f"Error getting Dell MAC address: {str(e)}")
+            return None
     
     def disconnect(self):
-        """Disconnect from UCS Central"""
+        """Disconnect from all systems"""
+        # Disconnect from HP OneView
+        if self.oneview_session and self.oneview_auth_token:
+            try:
+                logout_url = f"{self.oneview_base_url}/rest/login-sessions"
+                self.oneview_session.delete(logout_url)
+                self.oneview_session.close()
+                logger.info("Disconnected from HP OneView")
+            except Exception as e:
+                logger.warning(f"Error disconnecting from HP OneView: {str(e)}")
+            finally:
+                self.oneview_session = None
+                self.oneview_auth_token = None
+        
+        # Disconnect from UCS Central
         if self.ucsc_handle:
             try:
                 self.ucsc_handle.logout()
-                ucs_logger.info("Disconnected from UCS Central")
+                logger.info("Disconnected from UCS Central")
             except Exception as e:
-                ucs_logger.warning(f"Error during UCS Central logout: {str(e)}")
+                logger.warning(f"Error disconnecting from UCS Central: {str(e)}")
+            finally:
+                self.ucsc_handle = None
+        
+        # Disconnect from Dell OME
+        if self.ome_session and self.ome_auth_token:
+            try:
+                logout_url = f"{self.ome_base_url}/SessionService/Sessions"
+                self.ome_session.delete(logout_url)
+                self.ome_session.close()
+                logger.info("Disconnected from Dell OME")
+            except Exception as e:
+                logger.warning(f"Error disconnecting from Dell OME: {str(e)}")
+            finally:
+                self.ome_session = None
+                self.ome_auth_token = None
+        
+        # Clear caches
+        self._hp_servers_cache = None
+        self._ucs_servers_cache = None
+        self._dell_servers_cache = None
+    
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensure cleanup"""
+        self.disconnect()
 
 
 # ============================================================================
@@ -346,8 +664,8 @@ custom_api = client.CustomObjectsApi(k8s_client)
 core_v1 = client.CoreV1Api(k8s_client)
 operator_logger.info("Initialized Kubernetes API clients")
 
-# UCS client (initialized on startup)
-ucs_client = None
+# Unified server client (initialized on startup)
+unified_client = None
 
 # Buffer management
 bmh_buffer_lock = asyncio.Lock()
@@ -550,22 +868,31 @@ async def buffer_check_loop():
             buffer_logger.error(f"Error in buffer check loop: {str(e)}")
             buffer_logger.exception("Full exception details:")
 
-def get_ucs_connection():
-    """Get UCS connection, reconnecting if needed"""
-    global ucs_client
+def get_unified_connection():
+    """Get unified server connection, creating new instance for each use"""
+    global unified_client
     
-    if not ucs_client:
-        raise RuntimeError("UCS client not initialized")
+    if not unified_client:
+        raise RuntimeError("Unified client not initialized")
     
-    # Always reconnect to avoid timeout issues
-    try:
-        if ucs_client.ucsc_handle:
-            ucs_client.ucsc_handle.logout()
-    except:
-        pass
-    
-    ucs_client.connect()
-    return ucs_client
+    # Create a new instance with the same credentials
+    # This ensures fresh connections for each server lookup
+    return UnifiedServerClient(
+        # HP OneView
+        oneview_ip=unified_client.oneview_ip,
+        oneview_username=unified_client.oneview_username,
+        oneview_password=unified_client.oneview_password,
+        # Cisco UCS
+        ucs_central_ip=unified_client.ucs_central_ip,
+        central_username=unified_client.central_username,
+        central_password=unified_client.central_password,
+        manager_username=unified_client.manager_username,
+        manager_password=unified_client.manager_password,
+        # Dell OME
+        ome_ip=unified_client.ome_ip,
+        ome_username=unified_client.ome_username,
+        ome_password=unified_client.ome_password
+    )
 
 @kopf.on.startup()
 async def configure(settings: kopf.OperatorSettings, **_):
@@ -575,25 +902,61 @@ async def configure(settings: kopf.OperatorSettings, **_):
     settings.persistence.finalizer = 'bmhgenerator.infra.example.com/finalizer'
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
     
-    # Initialize UCS client
-    global ucs_client
+    # Initialize unified server client
+    global unified_client
     
+    # HP OneView credentials
+    oneview_ip = os.getenv('ONEVIEW_IP')
+    oneview_username = os.getenv('ONEVIEW_USERNAME', 'administrator')
+    oneview_password = os.getenv('ONEVIEW_PASSWORD')
+    
+    # Cisco UCS credentials
     ucs_central_ip = os.getenv('UCS_CENTRAL_IP')
     central_username = os.getenv('UCS_CENTRAL_USERNAME', 'admin')
     central_password = os.getenv('UCS_CENTRAL_PASSWORD')
     manager_username = os.getenv('UCS_MANAGER_USERNAME', 'admin')
     manager_password = os.getenv('UCS_MANAGER_PASSWORD')
     
-    if not all([ucs_central_ip, central_password, manager_password]):
-        operator_logger.error("Missing required UCS environment variables")
-        raise ValueError("Missing required UCS configuration")
+    # Dell OME credentials
+    ome_ip = os.getenv('OME_IP')
+    ome_username = os.getenv('OME_USERNAME', 'admin')
+    ome_password = os.getenv('OME_PASSWORD')
     
-    ucs_client = UCSClient(
+    # Check if at least one system is configured
+    hp_configured = all([oneview_ip, oneview_password])
+    ucs_configured = all([ucs_central_ip, central_password, manager_password])
+    dell_configured = all([ome_ip, ome_password])
+    
+    if not any([hp_configured, ucs_configured, dell_configured]):
+        operator_logger.error("No server management system configured. At least one system must be configured.")
+        raise ValueError("Missing server management configuration")
+    
+    # Log which systems are configured
+    configured_systems = []
+    if hp_configured:
+        configured_systems.append("HP OneView")
+    if ucs_configured:
+        configured_systems.append("Cisco UCS")
+    if dell_configured:
+        configured_systems.append("Dell OME")
+    
+    operator_logger.info(f"Configured server management systems: {', '.join(configured_systems)}")
+    
+    unified_client = UnifiedServerClient(
+        # HP OneView
+        oneview_ip=oneview_ip,
+        oneview_username=oneview_username,
+        oneview_password=oneview_password,
+        # Cisco UCS
         ucs_central_ip=ucs_central_ip,
         central_username=central_username,
         central_password=central_password,
         manager_username=manager_username,
-        manager_password=manager_password
+        manager_password=manager_password,
+        # Dell OME
+        ome_ip=ome_ip,
+        ome_username=ome_username,
+        ome_password=ome_password
     )
     
     # Check if we're already over limit
@@ -636,7 +999,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
     # Initial status
     status_update = {
         "phase": "Processing",
-        "message": f"Looking up server {server_name} in UCS Central"
+        "message": f"Looking up server {server_name} in management systems"
     }
     
     try:
@@ -653,17 +1016,11 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
         operator_logger.warning(f"Could not update initial status: {e}")
     
     try:
-        # Get UCS connection (handles reconnection)
-        ucs = get_ucs_connection()
-        operator_logger.info(f"Querying UCS Central for server: {server_name}")
-        mac_address, ipmi_address = ucs.get_server_info(server_name)
-        operator_logger.info(f"UCS query successful - MAC: {mac_address}, IPMI: {ipmi_address}")
-        
-        # Disconnect after use to avoid timeout
-        try:
-            ucs.disconnect()
-        except:
-            pass
+        # Get unified connection and search for server
+        with get_unified_connection() as client:
+            operator_logger.info(f"Searching for server: {server_name}")
+            mac_address, ipmi_address = client.get_server_info(server_name)
+            operator_logger.info(f"Server found - MAC: {mac_address}, Management IP: {ipmi_address}")
         
         # Check if we should buffer or create immediately
         async with bmh_buffer_lock:
@@ -822,11 +1179,11 @@ async def cleanup_fn(**kwargs):
         except asyncio.CancelledError:
             buffer_logger.info("Buffer check task cancelled")
     
-    if ucs_client:
+    if unified_client:
         try:
-            ucs_client.disconnect()
+            unified_client.disconnect()
         except Exception as e:
-            operator_logger.warning(f"Error disconnecting from UCS Central: {e}")
+            operator_logger.warning(f"Error disconnecting from server management systems: {e}")
     
     operator_logger.info("Cleanup completed")
 

@@ -1,3 +1,25 @@
+# HP OneView credentials secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hp-oneview-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-oneview-username" # Replace with your HP OneView username
+  password: "your-oneview-password" # Replace with your HP OneView password
+---
+# HP iLO credentials secret (for IPMI access to HP servers)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hp-ilo-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-ilo-username" # Replace with your HP iLO username
+  password: "your-ilo-password" # Replace with your HP iLO password
+---
 # UCS Central credentials secret
 apiVersion: v1
 kind: Secret
@@ -6,8 +28,8 @@ metadata:
   namespace: metal3-system
 type: Opaque
 stringData:
-  username: "your-ucs-central-username"  # Replace with your UCS Central username
-  password: "your-ucs-central-password"  # Replace with your UCS Central password
+  username: "your-ucs-central-username" # Replace with your UCS Central username
+  password: "your-ucs-central-password" # Replace with your UCS Central password
 ---
 # UCS Manager credentials secret (used for all UCS Managers)
 apiVersion: v1
@@ -17,19 +39,42 @@ metadata:
   namespace: metal3-system
 type: Opaque
 stringData:
-  username: "your-ucs-manager-username"  # Replace with your UCS Manager username
-  password: "your-ucs-manager-password"  # Replace with your UCS Manager password
+  username: "your-ucs-manager-username" # Replace with your UCS Manager username
+  password: "your-ucs-manager-password" # Replace with your UCS Manager password
 ---
-# Configuration for UCS Central IP and default IPMI settings
+# Dell OME credentials secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dell-ome-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-ome-username" # Replace with your Dell OME username
+  password: "your-ome-password" # Replace with your Dell OME password
+---
+# Dell iDRAC credentials secret (for IPMI access to Dell servers)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dell-idrac-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-idrac-username" # Replace with your Dell iDRAC username
+  password: "your-idrac-password" # Replace with your Dell iDRAC password
+---
+# Configuration for management system IPs
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: bmh-generator-config
   namespace: metal3-system
 data:
-  UCS_CENTRAL_IP: "10.0.0.1"  # Replace with your UCS Central IP address
-  DEFAULT_IPMI_USERNAME: "admin"
-  DEFAULT_IPMI_PASSWORD: "password"
+  # Management system IP addresses
+  HP_ONEVIEW_IP: "10.0.0.1" # Replace with your HP OneView IP address
+  UCS_CENTRAL_IP: "10.0.0.2" # Replace with your UCS Central IP address
+  DELL_OME_IP: "10.0.0.3" # Replace with your Dell OME IP address
 ---
 # Operator deployment
 apiVersion: apps/v1
@@ -42,7 +87,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate  # Kopf uses leader election, so only one instance should run
+    type: Recreate # Kopf uses leader election, so only one instance should run
   selector:
     matchLabels:
       app: bmh-generator-operator
@@ -53,64 +98,115 @@ spec:
     spec:
       serviceAccountName: bmh-generator-operator
       containers:
-      - name: operator
-        image: your-registry/bmh-generator-operator:latest  # Replace with your image
-        imagePullPolicy: Always
-        env:
-        # UCS Central configuration
-        - name: UCS_CENTRAL_IP
-          valueFrom:
-            configMapKeyRef:
-              name: bmh-generator-config
-              key: UCS_CENTRAL_IP
-        - name: UCS_CENTRAL_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: ucs-central-credentials
-              key: username
-        - name: UCS_CENTRAL_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ucs-central-credentials
-              key: password
-        # UCS Manager configuration
-        - name: UCS_MANAGER_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: ucs-manager-credentials
-              key: username
-        - name: UCS_MANAGER_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ucs-manager-credentials
-              key: password
-        # Default IPMI configuration
-        - name: DEFAULT_IPMI_USERNAME
-          valueFrom:
-            configMapKeyRef:
-              name: bmh-generator-config
-              key: DEFAULT_IPMI_USERNAME
-        - name: DEFAULT_IPMI_PASSWORD
-          valueFrom:
-            configMapKeyRef:
-              name: bmh-generator-config
-              key: DEFAULT_IPMI_PASSWORD
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
+        - name: operator
+          image: your-registry/bmh-generator-operator:latest # Replace with your image
+          imagePullPolicy: Always
+          env:
+            # HP OneView configuration
+            - name: HP_ONEVIEW_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: bmh-generator-config
+                  key: HP_ONEVIEW_IP
+            - name: HP_ONEVIEW_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: hp-oneview-credentials
+                  key: username
+            - name: HP_ONEVIEW_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hp-oneview-credentials
+                  key: password
+            # HP iLO credentials (for IPMI)
+            - name: HP_ILO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: hp-ilo-credentials
+                  key: username
+            - name: HP_ILO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hp-ilo-credentials
+                  key: password
+            # UCS Central configuration
+            - name: UCS_CENTRAL_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: bmh-generator-config
+                  key: UCS_CENTRAL_IP
+            - name: UCS_CENTRAL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-central-credentials
+                  key: username
+            - name: UCS_CENTRAL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-central-credentials
+                  key: password
+            # UCS Manager configuration
+            - name: UCS_MANAGER_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-manager-credentials
+                  key: username
+            - name: UCS_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ucs-manager-credentials
+                  key: password
+            # Dell OME configuration
+            - name: DELL_OME_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: bmh-generator-config
+                  key: DELL_OME_IP
+            - name: DELL_OME_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: dell-ome-credentials
+                  key: username
+            - name: DELL_OME_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dell-ome-credentials
+                  key: password
+            # Dell iDRAC credentials (for IPMI)
+            - name: DELL_IDRAC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: dell-idrac-credentials
+                  key: username
+            - name: DELL_IDRAC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dell-idrac-credentials
+                  key: password
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
