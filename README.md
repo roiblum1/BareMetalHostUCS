@@ -1,28 +1,48 @@
 # BareMetalHost Generator Operator
 
-A Kubernetes operator that automatically creates BareMetalHost resources by querying Cisco UCS Central for server information. This operator simplifies the process of onboarding bare metal servers into Metal3 and OpenShift bare metal deployments.
+A Kubernetes operator that automatically creates BareMetalHost resources by querying multiple server management systems (HP OneView, Cisco UCS Central, and Dell OpenManage Enterprise). This operator simplifies the process of onboarding bare metal servers from different vendors into Metal3 and OpenShift bare metal deployments.
 
 ## Overview
 
 The BareMetalHostGenerator operator:
-- Connects to Cisco UCS Central to discover servers across multiple UCS domains
-- Queries individual UCS Managers for detailed server information (MAC addresses and IPMI/KVM IPs)
-- Automatically creates BareMetalHost resources with the retrieved data
-- Generates BMC secrets for IPMI authentication
+- Connects to multiple server management systems:
+  - **HP OneView** for HP ProLiant servers
+  - **Cisco UCS Central** for Cisco UCS servers
+  - **Dell OpenManage Enterprise (OME)** for Dell PowerEdge servers
+- Automatically detects server vendor based on annotations or naming conventions
+- Queries the appropriate management system for server information (MAC addresses and management IPs)
+- Creates BareMetalHost resources with vendor-specific BMC configurations
+- Generates BMC secrets for IPMI/Redfish/iDRAC authentication
+- Implements a buffering mechanism to limit the number of available servers
 - Integrates with OpenShift Agent-based Installation workflows
+
+## Key Features
+
+- **Multi-vendor support**: Handles HP, Cisco, and Dell servers with appropriate BMC protocols
+- **Automatic vendor detection**: Uses explicit annotations or server naming patterns
+- **Buffer management**: Limits available BareMetalHosts to prevent resource exhaustion
+- **Vendor-specific BMC protocols**:
+  - HP: Redfish virtual media
+  - Dell: iDRAC virtual media  
+  - Cisco: IPMI
+- **Flexible credential management**: Separate credentials for each vendor's management system
+- **Status tracking**: Detailed status updates including Processing, Buffered, Completed, and Failed states
 
 ## Architecture
 
 The operator consists of:
 - **Custom Resource Definition (CRD)**: `BareMetalHostGenerator` - defines the desired server configuration
-- **Controller**: Watches for CRD creation and handles the server lookup and BMH creation
-- **UCS Client**: Interfaces with Cisco UCS Central and UCS Managers to retrieve server information
+- **Controller**: Watches for CRD creation and handles server lookup, buffering, and BMH creation
+- **UnifiedServerClient**: Interfaces with multiple vendor management systems
+- **Buffer Manager**: Controls the number of available BareMetalHosts in the cluster
 
 ## Prerequisites
 
 - Kubernetes cluster with Metal3 installed
-- Cisco UCS Central with API access
-- Cisco UCS Managers registered to UCS Central
+- One or more of the following management systems:
+  - HP OneView with API access
+  - Cisco UCS Central with registered UCS Managers
+  - Dell OpenManage Enterprise (OME) with managed servers
 - Appropriate RBAC permissions for the operator
 - Python 3.9+ environment (for development)
 
@@ -44,11 +64,40 @@ kubectl create namespace metal3-system
 kubectl apply -f deploy/rbac.yaml
 ```
 
-### 3. Configure UCS Credentials
+### 3. Configure Management System Credentials
 
-Create a secret for UCS Central credentials:
+The operator needs credentials for each management system you plan to use. You don't need to configure all systems - only the ones you have.
+
+#### HP OneView Configuration
 
 ```yaml
+# HP OneView credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hp-oneview-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-oneview-username"
+  password: "your-oneview-password"
+---
+# HP iLO credentials (for BMC access)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hp-ilo-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-ilo-username"
+  password: "your-ilo-password"
+```
+
+#### Cisco UCS Configuration
+
+```yaml
+# UCS Central credentials
 apiVersion: v1
 kind: Secret
 metadata:
@@ -56,13 +105,10 @@ metadata:
   namespace: metal3-system
 type: Opaque
 stringData:
-  central-username: "your-ucs-central-username"
-  central-password: "your-ucs-central-password"
-```
-
-Create a secret for UCS Manager credentials (used for all UCS Managers):
-
-```yaml
+  username: "your-ucs-central-username"
+  password: "your-ucs-central-password"
+---
+# UCS Manager credentials (used for all UCS Managers)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -70,11 +116,39 @@ metadata:
   namespace: metal3-system
 type: Opaque
 stringData:
-  manager-username: "your-ucs-manager-username"
-  manager-password: "your-ucs-manager-password"
+  username: "your-ucs-manager-username"
+  password: "your-ucs-manager-password"
 ```
 
-Update the ConfigMap in `deploy/deployment.yaml`:
+#### Dell OME Configuration
+
+```yaml
+# Dell OME credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dell-ome-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-ome-username"
+  password: "your-ome-password"
+---
+# Dell iDRAC credentials (for BMC access)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dell-idrac-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "your-idrac-username"
+  password: "your-idrac-password"
+```
+
+### 4. Configure Management System IPs
+
+Update the ConfigMap with your management system IP addresses:
 
 ```yaml
 apiVersion: v1
@@ -83,18 +157,19 @@ metadata:
   name: bmh-generator-config
   namespace: metal3-system
 data:
-  UCS_CENTRAL_IP: "10.0.0.1"  # Replace with your UCS Central IP
-  DEFAULT_IPMI_USERNAME: "admin"  # Default IPMI username
-  DEFAULT_IPMI_PASSWORD: "password"  # Default IPMI password
+  # Only configure the systems you have
+  HP_ONEVIEW_IP: "10.0.0.1"    # HP OneView IP (optional)
+  UCS_CENTRAL_IP: "10.0.0.2"   # Cisco UCS Central IP (optional)
+  DELL_OME_IP: "10.0.0.3"      # Dell OME IP (optional)
 ```
 
-### 4. Deploy the Operator
+### 5. Deploy the Operator
 
 ```bash
 kubectl apply -f deploy/deployment.yaml
 ```
 
-### 5. Verify Installation
+### 6. Verify Installation
 
 ```bash
 # Check if the operator is running
@@ -102,68 +177,93 @@ kubectl get pods -n metal3-system -l app=bmh-generator-operator
 
 # Check operator logs
 kubectl logs -n metal3-system -l app=bmh-generator-operator
+
+# Verify which management systems are configured
+kubectl logs -n metal3-system -l app=bmh-generator-operator | grep "Configured server management systems"
 ```
 
 ## Usage
 
 ### Creating a BareMetalHostGenerator
 
-Create a YAML file (e.g., `bmhgen-example.yaml`) with your server configuration:
+Create a YAML file with your server configuration:
 
 ```yaml
 apiVersion: infra.example.com/v1alpha1
 kind: BareMetalHostGenerator
 metadata:
-  name: ocp4-roi-compute01
+  name: my-server-01
   namespace: openshift-machine-api
+  annotations:
+    server_vendor: "HP"  # HP, Dell, or Cisco
 spec:
-  serverName: "compute-01"  # Name of server in UCS Central (optional, defaults to CR name)
+  serverName: "ESXi-Host-01"  # Name of server in management system
   namespace: "openshift-machine-api"  # Target namespace for BareMetalHost
-  infraEnv: "ocp4-roi"  # InfraEnv name for OpenShift Agent-based installation
-  ipmiUsername: "admin"  # IPMI username (optional)
-  ipmiPasswordSecret:  # Optional: reference to secret containing IPMI password
-    name: "ipmi-credentials"
-    key: "password"
+  infraEnv: "ocp4-cluster"  # InfraEnv name for OpenShift Agent-based installation
   labels:  # Additional labels for the BareMetalHost
     node-role.kubernetes.io/worker: ""
-    custom-label: "custom-value"
+    rack: "A1"
 ```
+
+### Server Vendor Detection
+
+The operator determines the server vendor using:
+
+1. **Explicit annotation** (recommended):
+   ```yaml
+   metadata:
+     annotations:
+       server_vendor: "HP"  # or "Dell" or "Cisco"
+   ```
+
+2. **Naming convention** (fallback):
+   - Names containing 'rf' → HP servers
+   - Names containing 'ome' → Dell servers
+   - All others → Cisco servers
 
 ### Apply the Configuration
 
 ```bash
 # Create the BareMetalHostGenerator
-kubectl apply -f bmhgen-example.yaml
+kubectl apply -f my-server.yaml
 
 # Check status
 kubectl get bmhgen -n openshift-machine-api
 
 # Get detailed information
-kubectl describe bmhgen ocp4-roi-compute01 -n openshift-machine-api
+kubectl describe bmhgen my-server-01 -n openshift-machine-api
 
-# Verify the BareMetalHost was created
-kubectl get bmh -n openshift-machine-api
-
-# Check the generated BareMetalHost details
-kubectl describe bmh ocp4-roi-compute01 -n openshift-machine-api
+# Check if server was buffered
+kubectl get bmhgen my-server-01 -n openshift-machine-api -o jsonpath='{.status.phase}'
 ```
 
-### Monitoring Progress
+### Understanding Server Buffering
 
-The operator updates the status of the BareMetalHostGenerator resource:
+The operator implements a buffering mechanism to prevent too many servers from being available at once:
 
-```bash
-# Watch the status in real-time
-kubectl get bmhgen ocp4-roi-compute01 -n openshift-machine-api -w
-
-# Check current status
-kubectl get bmhgen ocp4-roi-compute01 -n openshift-machine-api -o yaml
-```
+- **MAX_AVAILABLE_SERVERS**: 20 (default)
+- When the limit is reached, new servers are put in "Buffered" state
+- Buffered servers are automatically released when space becomes available
+- Buffer check runs every 30 seconds
 
 Status phases:
-- **Processing**: Operator is querying UCS Central and creating resources
+- **Processing**: Operator is querying management systems
+- **Buffered**: Server information retrieved but waiting for available slot
 - **Completed**: BareMetalHost successfully created
 - **Failed**: Error occurred during processing
+
+### Monitoring Buffered Servers
+
+```bash
+# View all buffered servers
+kubectl get bmhgen --all-namespaces -o json | jq '.items[] | select(.status.phase=="Buffered") | {name: .metadata.name, namespace: .metadata.namespace, bufferedAt: .status.bufferedAt}'
+
+# Check available BareMetalHost count
+kubectl get bmh --all-namespaces -o json | jq '[.items[] | select(.status.provisioning.state != "provisioned")] | length'
+
+# Watch operator buffer management logs
+kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -i buffer
+```
 
 ## Configuration Options
 
@@ -171,116 +271,123 @@ Status phases:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `serverName` | string | No | Name of the server in UCS Central (defaults to CR name) |
+| `serverName` | string | No | Name of the server in management system (defaults to CR name) |
 | `namespace` | string | No | Target namespace for BareMetalHost (defaults to current namespace) |
 | `infraEnv` | string | Yes | InfraEnv name for OpenShift Agent-based installation |
-| `ipmiUsername` | string | No | IPMI username (defaults to operator config) |
-| `ipmiPasswordSecret` | object | No | Reference to secret containing IPMI password |
 | `labels` | map | No | Additional labels to add to BareMetalHost |
+
+### BareMetalHostGenerator Annotations
+
+| Annotation | Values | Description |
+|------------|--------|-------------|
+| `server_vendor` | HP, Dell, Cisco | Explicitly specify server vendor |
 
 ### Environment Variables
 
-The operator requires the following environment variables:
+The operator uses the following environment variables:
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `UCS_CENTRAL_IP` | UCS Central IP address | - | Yes |
-| `UCS_CENTRAL_USERNAME` | UCS Central username | `admin` | No |
-| `UCS_CENTRAL_PASSWORD` | UCS Central password | - | Yes |
-| `UCS_MANAGER_USERNAME` | UCS Manager username (for all managers) | `admin` | No |
-| `UCS_MANAGER_PASSWORD` | UCS Manager password (for all managers) | - | Yes |
-| `DEFAULT_IPMI_USERNAME` | Default IPMI username | `admin` | No |
-| `DEFAULT_IPMI_PASSWORD` | Default IPMI password | `password` | No |
+| Variable | Description | Required | Used For |
+|----------|-------------|----------|----------|
+| `HP_ONEVIEW_IP` | HP OneView IP address | No* | HP servers |
+| `HP_ONEVIEW_USERNAME` | HP OneView username | No* | HP servers |
+| `HP_ONEVIEW_PASSWORD` | HP OneView password | No* | HP servers |
+| `UCS_CENTRAL_IP` | UCS Central IP address | No* | Cisco servers |
+| `UCS_CENTRAL_USERNAME` | UCS Central username | No* | Cisco servers |
+| `UCS_CENTRAL_PASSWORD` | UCS Central password | No* | Cisco servers |
+| `UCS_MANAGER_USERNAME` | UCS Manager username | No* | Cisco servers |
+| `UCS_MANAGER_PASSWORD` | UCS Manager password | No* | Cisco servers |
+| `DELL_OME_IP` | Dell OME IP address | No* | Dell servers |
+| `DELL_OME_USERNAME` | Dell OME username | No* | Dell servers |
+| `DELL_OME_PASSWORD` | Dell OME password | No* | Dell servers |
+| `IPMI_USERNAME` | Default IPMI/BMC username | Yes | All vendors |
+| `IPMI_PASSWORD` | Default IPMI/BMC password | Yes | All vendors |
+
+*At least one vendor's configuration must be provided
 
 ## Generated Resources
 
 For each BareMetalHostGenerator, the operator creates:
 
-1. **BareMetalHost**: The main Metal3 resource representing the bare metal server
-2. **Secret**: BMC credentials for IPMI access (named `{server-name}-bmc-secret`)
+1. **BareMetalHost**: The main Metal3 resource with vendor-specific BMC configuration
+2. **Secret**: BMC credentials for server access (named based on vendor)
 
-### Example Generated BareMetalHost
+### Vendor-Specific BMC Configurations
 
+#### HP Servers
 ```yaml
-apiVersion: metal3.io/v1alpha1
-kind: BareMetalHost
-metadata:
-  name: ocp4-roi-compute01
-  namespace: openshift-machine-api
-  labels:
-    infraenvs.agent-install.openshift.io: ocp4-roi
-  annotations:
-    inspect.metal3.io: disabled
-    bmac.agent-install.openshift.io/hostname: ocp4-roi-compute01
 spec:
-  online: true
-  bootMACAddress: "aa:bb:cc:dd:ee:ff"
-  automatedCleaningMode: disabled
   bmc:
-    address: "ipmi://192.168.1.100"
-    credentialsName: "ocp4-roi-compute01-bmc-secret"
-    disableCertificateVerification: true
-  bootMode: UEFI
+    address: "redfish-virtualmedia://10.0.0.100/redfish/v1/Systems/1"
+    credentialsName: "hp-bmc-servername"
+```
+
+#### Dell Servers
+```yaml
+spec:
+  bmc:
+    address: "idrac-virtualmedia://10.0.0.101/redfish/v1/Systems/System.Embedded.1"
+    credentialsName: "dell-bmc-servername"
+```
+
+#### Cisco Servers
+```yaml
+spec:
+  bmc:
+    address: "ipmi://10.0.0.102"
+    credentialsName: "cisco-bmc-servername"
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **UCS Central Connection Errors**
+1. **Management System Connection Errors**
    ```bash
-   # Check operator logs
-   kubectl logs -n metal3-system -l app=bmh-generator-operator
+   # Check operator logs for connection issues
+   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -E "Error|Failed|Warning"
    
-   # Verify UCS Central credentials
-   kubectl get secret ucs-central-credentials -n metal3-system -o yaml
-   
-   # Check UCS Central IP configuration
-   kubectl get configmap bmh-generator-config -n metal3-system -o yaml
+   # Verify credentials are properly set
+   kubectl get secrets -n metal3-system
    ```
 
-2. **UCS Manager Connection Errors**
+2. **Server Not Found**
    ```bash
-   # Check if the operator can reach UCS Managers through UCS Central
-   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -i "domain"
-   
-   # Verify UCS Manager credentials
-   kubectl get secret ucs-manager-credentials -n metal3-system -o yaml
-   ```
-
-3. **Server Not Found in UCS Central**
-   ```bash
-   # Check if the server name exists in UCS Central
+   # Check if server name exists in management system
    kubectl describe bmhgen <name> -n <namespace>
    
-   # Verify the server is registered in UCS Central
-   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -i "servers"
+   # View detailed search logs
+   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -i "Searching"
    ```
 
-4. **Permission Errors**
+3. **Server Buffered Instead of Created**
    ```bash
-   # Verify RBAC configuration
-   kubectl auth can-i create baremetalhosts --as=system:serviceaccount:metal3-system:bmh-generator-operator
+   # Check current available count
+   kubectl get bmh --all-namespaces -o json | jq '[.items[] | select(.status.provisioning.state != "provisioned")] | length'
+   
+   # View buffer status
+   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep "Current available BareMetalHosts"
+   ```
+
+4. **Wrong Vendor Detection**
+   ```bash
+   # Add explicit vendor annotation
+   kubectl annotate bmhgen <name> -n <namespace> server_vendor=HP --overwrite
    ```
 
 ### Debug Commands
 
 ```bash
-# Get all BareMetalHostGenerators
-kubectl get bmhgen --all-namespaces
+# Get all BareMetalHostGenerators with their status
+kubectl get bmhgen --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace,VENDOR:.metadata.annotations.server_vendor,PHASE:.status.phase,MESSAGE:.status.message
 
-# Check operator status
-kubectl get pods -n metal3-system
-kubectl describe deployment bmh-generator-operator -n metal3-system
+# Check which management systems are available
+kubectl logs -n metal3-system deployment/bmh-generator-operator | head -50 | grep "Configured"
 
-# View operator logs
-kubectl logs -n metal3-system deployment/bmh-generator-operator -f
+# Monitor buffer management in real-time
+kubectl logs -n metal3-system deployment/bmh-generator-operator -f | grep -i buffer
 
-# Check UCS Central connectivity
-kubectl logs -n metal3-system deployment/bmh-generator-operator | grep -i "ucs central"
-
-# Check server discovery
-kubectl logs -n metal3-system deployment/bmh-generator-operator | grep -i "found.*servers"
+# View failed generators
+kubectl get bmhgen --all-namespaces -o json | jq '.items[] | select(.status.phase=="Failed") | {name: .metadata.name, error: .status.message}'
 ```
 
 ## Development
@@ -292,15 +399,28 @@ kubectl logs -n metal3-system deployment/bmh-generator-operator | grep -i "found
    pip install -r requirements.txt
    ```
 
-2. Set environment variables:
+2. Set environment variables for your available systems:
    ```bash
-   export UCS_CENTRAL_IP="10.0.0.1"
+   # HP OneView (if available)
+   export HP_ONEVIEW_IP="10.0.0.1"
+   export HP_ONEVIEW_USERNAME="administrator"
+   export HP_ONEVIEW_PASSWORD="your-password"
+   
+   # Cisco UCS (if available)
+   export UCS_CENTRAL_IP="10.0.0.2"
    export UCS_CENTRAL_USERNAME="admin"
-   export UCS_CENTRAL_PASSWORD="your-central-password"
+   export UCS_CENTRAL_PASSWORD="your-password"
    export UCS_MANAGER_USERNAME="admin"
-   export UCS_MANAGER_PASSWORD="your-manager-password"
-   export DEFAULT_IPMI_USERNAME="admin"
-   export DEFAULT_IPMI_PASSWORD="password"
+   export UCS_MANAGER_PASSWORD="your-password"
+   
+   # Dell OME (if available)
+   export DELL_OME_IP="10.0.0.3"
+   export DELL_OME_USERNAME="admin"
+   export DELL_OME_PASSWORD="your-password"
+   
+   # IPMI credentials (required)
+   export IPMI_USERNAME="admin"
+   export IPMI_PASSWORD="password"
    ```
 
 3. Run locally:
@@ -308,32 +428,26 @@ kubectl logs -n metal3-system deployment/bmh-generator-operator | grep -i "found
    kopf run --liveness=http://0.0.0.0:8080/healthz src/operator_bmh_gen.py --all-namespaces
    ```
 
-### Testing UCS Connection
-
-You can test the UCS client independently:
+### Testing Unified Server Client
 
 ```python
-from src.ucs_client import UCSClient
+from src.operator_bmh_gen import UnifiedServerClient
 
-# Initialize the client
-client = UCSClient(
-    ucs_central_ip='10.0.0.1',
-    central_username='admin',
-    central_password='central-password',
-    manager_username='admin',
-    manager_password='manager-password'
+# Initialize client with available systems
+client = UnifiedServerClient(
+    oneview_ip='10.0.0.1',
+    oneview_username='admin',
+    oneview_password='password',
+    # Add other systems as needed
 )
 
-# Connect and query
-client.connect()
-servers = client.get_all_servers()
-print(f"Found {len(servers)} servers in UCS Central")
+# Test server lookup with explicit vendor
+mac, ip = client.get_server_info('MyServer', server_vendor='HP')
+print(f"Found: MAC={mac}, IP={ip}")
 
-# Get specific server info
-mac, ip = client.get_server_info('compute-01')
-print(f"MAC: {mac}, IP: {ip}")
-
-client.disconnect()
+# Test auto-detection
+mac, ip = client.get_server_info('rf-compute-01')  # Auto-detects as HP
+print(f"Found: MAC={mac}, IP={ip}")
 ```
 
 ### Building the Container
@@ -346,25 +460,39 @@ docker build -t your-registry/bmh-generator-operator:latest .
 docker push your-registry/bmh-generator-operator:latest
 ```
 
+## Buffer Management Details
+
+The operator implements sophisticated buffer management:
+
+1. **Limit Enforcement**: Maximum 20 BareMetalHosts can be "available" (not provisioned)
+2. **Automatic Buffering**: When limit is reached, new servers are buffered with their discovered information
+3. **FIFO Release**: Buffered servers are released in order (first buffered, first released)
+4. **Periodic Checks**: Every 30 seconds, the operator checks if slots are available
+5. **Status Preservation**: Buffered servers maintain their discovered MAC and IP information
+
 ## Security Considerations
 
-- Store UCS Central and UCS Manager credentials in separate Kubernetes secrets
-- Use least-privilege RBAC permissions
+- Store all credentials in Kubernetes secrets
+- Use separate credentials for each vendor's management system
+- Different credentials for management systems vs BMC/IPMI access
 - Enable network policies to restrict operator communication
-- Regularly rotate credentials for both UCS Central and UCS Managers
-- Consider using external secret management solutions (e.g., HashiCorp Vault, AWS Secrets Manager)
-- Ensure secure communication between the operator and UCS Central/Managers
+- Regularly rotate credentials
+- Consider using external secret management solutions
+- Ensure secure communication with all management systems
 
-## UCS Central Integration Details
+## Multi-Vendor Workflow
 
 The operator follows this workflow:
-1. Connects to UCS Central using provided credentials
-2. Queries all logical servers (`lsServer`) from UCS Central
-3. For each requested server, finds the corresponding UCS Manager domain
-4. Connects to the specific UCS Manager to retrieve detailed information
-5. Extracts MAC address from VnicEther adapters
-6. Extracts KVM/IPMI IP from VnicIpV4PooledAddr
-7. Creates BareMetalHost resource with the gathered information
+
+1. **Vendor Detection**: Determines vendor from annotation or naming pattern
+2. **System Selection**: Chooses primary management system based on vendor
+3. **Server Search**: Queries the primary system first, then others if not found
+4. **Information Extraction**: 
+   - HP: Queries OneView for server hardware and iLO information
+   - Cisco: Connects to UCS Central, finds domain, queries UCS Manager
+   - Dell: Queries OME for device information and iDRAC details
+5. **BMC Configuration**: Creates vendor-specific BMC address format
+6. **Resource Creation**: Generates BareMetalHost with appropriate settings
 
 ## Contributing
 
@@ -381,7 +509,7 @@ This project is licensed under the Apache License 2.0 - see the LICENSE file for
 ## Support
 
 For issues and questions:
-- Check the troubleshooting section above
+- Check the troubleshooting section
 - Review operator logs for detailed error messages
-- Verify UCS Central and Manager connectivity
+- Verify management system connectivity
 - Open an issue in the project repository
