@@ -113,7 +113,7 @@ def generate_baremetal_host(
             "automatedCleaningMode": "disabled",
             "bmc": {
                 "address": f"ipmi://{ipmi_address}",
-                "credentialsName": f"{name}-bmc-secret",
+                "credentialsName": f"cisco-cerd-{name}",
                 "disableCertificateVerification": True,
             },
             "bootMode": "UEFI",
@@ -141,7 +141,7 @@ def generate_bmc_secret(
     secret_data = {
         "apiVersion": "v1",
         "kind": "Secret",
-        "metadata": {"name": f"{name}-bmc-secret", "namespace": namespace},
+        "metadata": {"name": f"cisco-cerd-{name}", "namespace": namespace},
         "type": "Opaque",
         "data": {
             "username": base64.b64encode(username.encode()).decode(),
