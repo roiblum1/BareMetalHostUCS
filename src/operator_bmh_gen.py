@@ -899,6 +899,9 @@ async def configure(settings: kopf.OperatorSettings, **_):
     """Configure operator settings"""
     operator_logger.info("Starting operator configuration")
     
+    settings.execution.max_workers = 4  
+    settings.posting.enabled = False
+    settings.batching.worker_limit = 1
     settings.persistence.finalizer = 'bmhgenerator.infra.example.com/finalizer'
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
     
