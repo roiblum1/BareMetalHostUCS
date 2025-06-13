@@ -84,13 +84,31 @@ def generate_baremetal_host(
     ipmi_username: str,
     ipmi_password: str,
     infra_env: str,
+    server_vendor: str,
     labels: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Generate BareMetalHost resource definition"""
     bmh_logger.info(f"Generating BareMetalHost for {name} in namespace {namespace}")
-    bmh_logger.debug(f"Parameters - MAC: {mac_address}, IPMI: {ipmi_address}, InfraEnv: {infra_env}")
+    bmh_logger.debug(f"Parameters - MAC: {mac_address}, IPMI: {ipmi_address}, InfraEnv: {infra_env}, Vendor: {server_vendor}")
     
     validate_inputs(mac_address, ipmi_address)
+    
+    # Determine BMC address format based on vendor
+    if server_vendor.upper() == "HP":
+        bmc_address = f"redfish-virtualmedia://{ipmi_address}/redfish/v1/Systems/1"
+        secret_name = f"hp-bmc-{name}"
+    elif server_vendor.upper() == "DELL":
+        bmc_address = f"idrac-virtualmedia://{ipmi_address}/redfish/v1/Systems/System.Embedded.1"
+        secret_name = f"dell-bmc-{name}"
+    elif server_vendor.upper() == "CISCO":
+        bmc_address = f"ipmi://{ipmi_address}"
+        secret_name = f"cisco-bmc-{name}"
+    else:
+        bmh_logger.warning(f"Unknown vendor {server_vendor}, defaulting to IPMI")
+        bmc_address = f"ipmi://{ipmi_address}"
+        secret_name = f"bmc-{name}"
+    
+    bmh_logger.info(f"Using BMC address format for {server_vendor}: {bmc_address}")
     
     bmh_data = {
         "apiVersion": "metal3.io/v1alpha1",
@@ -100,11 +118,13 @@ def generate_baremetal_host(
             "namespace": namespace,
             "labels": {
                 "infraenvs.agent-install.openshift.io": infra_env,
+                "server-vendor": server_vendor.lower(),
                 **(labels or {}),
             },
             "annotations": {
                 "inspect.metal3.io": "disabled",
                 "bmac.agent-install.openshift.io/hostname": name,
+                "server-vendor": server_vendor.upper(),
             },
         },
         "spec": {
@@ -112,8 +132,8 @@ def generate_baremetal_host(
             "bootMACAddress": mac_address,
             "automatedCleaningMode": "disabled",
             "bmc": {
-                "address": f"ipmi://{ipmi_address}",
-                "credentialsName": f"cisco-cerd-{name}",
+                "address": bmc_address,
+                "credentialsName": secret_name,
                 "disableCertificateVerification": True,
             },
             "bootMode": "UEFI",
@@ -133,15 +153,34 @@ def generate_bmc_secret(
     namespace: str,
     username: str,
     password: str,
+    server_vendor: str,
 ) -> Dict[str, Any]:
     """Generate BMC Secret resource definition"""
     bmh_logger.info(f"Generating BMC secret for {name} in namespace {namespace}")
-    bmh_logger.debug(f"BMC username: {username}")
+    bmh_logger.debug(f"BMC username: {username}, Vendor: {server_vendor}")
+    
+    # Determine secret name based on vendor
+    if server_vendor.upper() == "HP":
+        secret_name = f"hp-bmc-{name}"
+    elif server_vendor.upper() == "DELL":
+        secret_name = f"dell-bmc-{name}"
+    elif server_vendor.upper() == "CISCO":
+        secret_name = f"cisco-bmc-{name}"
+    else:
+        bmh_logger.warning(f"Unknown vendor {server_vendor}, using default naming")
+        secret_name = f"bmc-{name}"
     
     secret_data = {
         "apiVersion": "v1",
         "kind": "Secret",
-        "metadata": {"name": f"cisco-cerd-{name}", "namespace": namespace},
+        "metadata": {
+            "name": secret_name,
+            "namespace": namespace,
+            "labels": {
+                "server-vendor": server_vendor.lower(),
+                "baremetalhost": name,
+            }
+        },
         "type": "Opaque",
         "data": {
             "username": base64.b64encode(username.encode()).decode(),
@@ -150,7 +189,7 @@ def generate_bmc_secret(
     }
     
     validate_yaml_format(secret_data)
-    bmh_logger.info(f"Successfully generated BMC secret definition for {name}-bmc-secret")
+    bmh_logger.info(f"Successfully generated BMC secret definition for {secret_name}")
     
     return secret_data
 
@@ -234,16 +273,33 @@ class UnifiedServerClient:
         
         logger.info("Initialized UnifiedServerClient")
     
-    def detect_server_type(self, server_name: str) -> ServerType:
+    def detect_server_type(self, server_name: str, server_vendor: Optional[str] = None) -> ServerType:
         """
-        Detect server type based on naming convention.
+        Detect server type based on explicit vendor or naming convention.
         
         Args:
             server_name: Name of the server
+            server_vendor: Optional explicit server vendor (HP, Dell, Cisco)
             
         Returns:
             ServerType enum value
         """
+        # If server_vendor is explicitly provided, use it
+        if server_vendor:
+            vendor_upper = server_vendor.upper()
+            if vendor_upper == "HP":
+                logger.debug(f"Using explicit vendor HP for server: {server_name}")
+                return ServerType.HP
+            elif vendor_upper == "DELL":
+                logger.debug(f"Using explicit vendor Dell for server: {server_name}")
+                return ServerType.DELL
+            elif vendor_upper == "CISCO":
+                logger.debug(f"Using explicit vendor Cisco for server: {server_name}")
+                return ServerType.CISCO
+            else:
+                logger.warning(f"Unknown vendor '{server_vendor}' provided, falling back to name detection")
+        
+        # Fall back to name-based detection
         server_name_lower = server_name.lower()
         
         if 'rf' in server_name_lower:
@@ -257,21 +313,22 @@ class UnifiedServerClient:
             logger.debug(f"Defaulting to Cisco server for: {server_name}")
             return ServerType.CISCO
     
-    def get_server_info(self, server_name: str) -> Tuple[str, str]:
+    def get_server_info(self, server_name: str, server_vendor: Optional[str] = None) -> Tuple[str, str]:
         """
         Get server MAC address and management IP based on server name.
         Automatically detects server type and searches efficiently.
         
         Args:
             server_name: Name of the server
+            server_vendor: Optional explicit server vendor (HP, Dell, Cisco)
             
         Returns:
             Tuple of (mac_address, management_ip)
         """
-        logger.info(f"Getting server info for: {server_name}")
+        logger.info(f"Getting server info for: {server_name}, vendor: {server_vendor or 'auto-detect'}")
         
-        # Detect server type based on naming convention
-        server_type = self.detect_server_type(server_name)
+        # Detect server type based on vendor annotation or naming convention
+        server_type = self.detect_server_type(server_name, server_vendor)
         
         # Define search order based on detected type
         if server_type == ServerType.HP:
@@ -751,6 +808,9 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
         target_namespace = spec.get('namespace', namespace)
         infra_env = spec.get('infraEnv')
         
+        annotations = bmhgen.get('metadata', {}).get('annotations', {})
+        server_vendor = annotations.get('server_vendor', unified_client.detect_server_type(name).value) 
+        
         # Get IPMI credentials from environment only
         ipmi_username = os.getenv('IPMI_USERNAME', 'admin')
         ipmi_password = os.getenv('IPMI_PASSWORD', 'password')
@@ -763,12 +823,12 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
         except:
             buffer_logger.debug("Using plain text IPMI credentials from environment")
         
-        # Create BMC Secret
         bmc_secret = generate_bmc_secret(
             name=name,
             namespace=target_namespace,
             username=ipmi_username,
-            password=ipmi_password
+            password=ipmi_password,
+            server_vendor=server_vendor
         )
         
         try:
@@ -776,14 +836,14 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
                 namespace=target_namespace,
                 body=bmc_secret
             )
-            buffer_logger.info(f"Created BMC secret: {name}-bmc-secret")
+            buffer_logger.info(f"Created BMC secret: {bmc_secret['metadata']['name']}")
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 409:
-                buffer_logger.debug(f"BMC secret already exists: {name}-bmc-secret")
+                buffer_logger.debug(f"BMC secret already exists: {bmc_secret['metadata']['name']}")
             else:
                 raise
         
-        # Create BareMetalHost
+        # Create BareMetalHost with server vendor
         bmh = generate_baremetal_host(
             name=name,
             namespace=target_namespace,
@@ -792,6 +852,7 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
             ipmi_username=ipmi_username,
             ipmi_password=ipmi_password,
             infra_env=infra_env,
+            server_vendor=server_vendor,
             labels=spec.get('labels', {})
         )
         
@@ -996,6 +1057,10 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
     target_namespace = spec.get('namespace', namespace)
     infra_env = spec.get('infraEnv')
     
+    annotations = kwargs.get('meta', {}).get('annotations', {})
+    server_vendor = annotations.get('server_vendor')
+    operator_logger.info(f"Server vendor annotation: {server_vendor}")  
+    
     if not infra_env:
         raise kopf.PermanentError("infraEnv is required in spec")
     
@@ -1021,8 +1086,8 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
     try:
         # Get unified connection and search for server
         with get_unified_connection() as client:
-            operator_logger.info(f"Searching for server: {server_name}")
-            mac_address, ipmi_address = client.get_server_info(server_name)
+            operator_logger.info(f"Searching for server: {server_name}, vendor: {server_vendor or 'auto-detect'}")
+            mac_address, ipmi_address = client.get_server_info(server_name, server_vendor)
             operator_logger.info(f"Server found - MAC: {mac_address}, Management IP: {ipmi_address}")
         
         # Check if we should buffer or create immediately
@@ -1066,12 +1131,12 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
         except:
             operator_logger.debug("Using plain text IPMI credentials from environment")
         
-        # Create BMC Secret
         bmc_secret = generate_bmc_secret(
             name=server_name,
             namespace=target_namespace,
             username=ipmi_username,
-            password=ipmi_password
+            password=ipmi_password,
+            server_vendor=server_vendor or unified_client.detect_server_type(server_name).value 
         )
         
         try:
@@ -1079,14 +1144,14 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
                 namespace=target_namespace,
                 body=bmc_secret
             )
-            operator_logger.info(f"Created BMC secret: {server_name}-bmc-secret")
+            operator_logger.info(f"Created BMC secret: {bmc_secret['metadata']['name']}")
         except kubernetes.client.exceptions.ApiException as e:
             if e.status == 409:
-                operator_logger.info(f"BMC secret already exists: {server_name}-bmc-secret")
+                operator_logger.info(f"BMC secret already exists: {bmc_secret['metadata']['name']}")
             else:
                 raise
         
-        # Generate and create BareMetalHost
+        # Generate and create BareMetalHost - now passing server_vendor
         bmh = generate_baremetal_host(
             name=server_name,
             namespace=target_namespace,
@@ -1095,6 +1160,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
             ipmi_username=ipmi_username,
             ipmi_password=ipmi_password,
             infra_env=infra_env,
+            server_vendor=server_vendor or unified_client.detect_server_type(server_name).value, 
             labels=spec.get('labels', {})
         )
         
