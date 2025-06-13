@@ -800,16 +800,73 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
         mac_address = status.get('macAddress')
         ipmi_address = status.get('ipmiAddress')
         
+        # Get vendor from status first (if it was stored during buffering)
+        server_vendor = status.get('serverVendor')
+        
+        if not server_vendor:
+            # Fall back to annotation or name-based detection
+            annotations = bmhgen.get('metadata', {}).get('annotations', {})
+            server_vendor = annotations.get('server_vendor')
+            
+            if not server_vendor:
+                # Use name-based detection and convert to uppercase
+                detected_type = unified_client.detect_server_type(name)
+                server_vendor = detected_type.name  # This gives "HP", "CISCO", "DELL" (uppercase)
+        
+        buffer_logger.info(f"Processing buffered server with vendor: {server_vendor}")
+        
+        # If server info is missing, try to fetch it again
         if not mac_address or not ipmi_address:
-            buffer_logger.error(f"Missing server info for buffered generator {name}")
-            return
+            buffer_logger.warning(f"Missing server info for buffered generator {name}, attempting to re-fetch")
+            
+            spec = bmhgen['spec']
+            server_name = spec.get('serverName', name)
+            
+            try:
+                # Get unified connection and search for server again
+                with get_unified_connection() as client:
+                    buffer_logger.info(f"Re-fetching server info for: {server_name}, vendor: {server_vendor}")
+                    mac_address, ipmi_address = client.get_server_info(server_name, server_vendor)
+                    buffer_logger.info(f"Successfully re-fetched - MAC: {mac_address}, Management IP: {ipmi_address}")
+                    
+                    # Update the buffered data with the fresh information
+                    patch = {
+                        "status": {
+                            "macAddress": mac_address,
+                            "ipmiAddress": ipmi_address
+                        }
+                    }
+                    custom_api.patch_namespaced_custom_object_status(
+                        group="infra.example.com",
+                        version="v1alpha1",
+                        namespace=namespace,
+                        plural="baremetalhostgenerators",
+                        name=name,
+                        body=patch
+                    )
+                    
+            except Exception as e:
+                buffer_logger.error(f"Failed to re-fetch server info: {str(e)}")
+                # Update status to failed if we can't get the server info
+                patch = {
+                    "status": {
+                        "phase": "Failed",
+                        "message": f"Cannot retrieve server information: {str(e)}"
+                    }
+                }
+                custom_api.patch_namespaced_custom_object_status(
+                    group="infra.example.com",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="baremetalhostgenerators",
+                    name=name,
+                    body=patch
+                )
+                return
         
         spec = bmhgen['spec']
         target_namespace = spec.get('namespace', namespace)
         infra_env = spec.get('infraEnv')
-        
-        annotations = bmhgen.get('metadata', {}).get('annotations', {})
-        server_vendor = annotations.get('server_vendor', unified_client.detect_server_type(name).value) 
         
         # Get IPMI credentials from environment only
         ipmi_username = os.getenv('IPMI_USERNAME', 'admin')
@@ -887,6 +944,23 @@ async def process_buffered_generator(bmhgen: Dict[str, Any]) -> None:
         
     except Exception as e:
         buffer_logger.error(f"Error processing buffered generator {name}: {str(e)}")
+        try:
+            patch = {
+                "status": {
+                    "phase": "Failed",
+                    "message": f"Failed to create from buffer: {str(e)}"
+                }
+            }
+            custom_api.patch_namespaced_custom_object_status(
+                group="infra.example.com",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="baremetalhostgenerators",
+                name=name,
+                body=patch
+            )
+        except:
+            pass
         raise
 
 async def buffer_check_loop():
@@ -1089,6 +1163,12 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
             operator_logger.info(f"Searching for server: {server_name}, vendor: {server_vendor or 'auto-detect'}")
             mac_address, ipmi_address = client.get_server_info(server_name, server_vendor)
             operator_logger.info(f"Server found - MAC: {mac_address}, Management IP: {ipmi_address}")
+            
+            if not server_vendor:
+                detected_type = client.detect_server_type(server_name, server_vendor)
+                server_vendor = detected_type.name
+            
+            operator_logger.info(f"Final server vendor: {server_vendor}")
         
         # Check if we should buffer or create immediately
         async with bmh_buffer_lock:
@@ -1098,13 +1178,14 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
             buffer_logger.info(f"Current available BareMetalHosts: {available_count}/{MAX_AVAILABLE_SERVERS}")
             
             if available_count >= MAX_AVAILABLE_SERVERS:
-                # Buffer this server
+                # Buffer this server - now including vendor information
                 status_update = {
                     "phase": "Buffered",
                     "message": f"Server buffered (available: {available_count}/{MAX_AVAILABLE_SERVERS})",
                     "bufferedAt": datetime.now().isoformat(),
                     "macAddress": mac_address,
-                    "ipmiAddress": ipmi_address
+                    "ipmiAddress": ipmi_address,
+                    "serverVendor": server_vendor  # Store vendor in status
                 }
                 
                 custom_api.patch_namespaced_custom_object_status(
@@ -1117,7 +1198,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
                 )
                 
                 buffer_logger.info(f"Buffering server {server_name} - limit reached")
-                return
+                return  # No error is raised here, just returns after updating status
         
         # Get IPMI credentials from environment only
         ipmi_username = os.getenv('IPMI_USERNAME', 'admin')
@@ -1131,12 +1212,13 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
         except:
             operator_logger.debug("Using plain text IPMI credentials from environment")
         
+        # Create BMC Secret - using determined server_vendor
         bmc_secret = generate_bmc_secret(
             name=server_name,
             namespace=target_namespace,
             username=ipmi_username,
             password=ipmi_password,
-            server_vendor=server_vendor or unified_client.detect_server_type(server_name).value 
+            server_vendor=server_vendor
         )
         
         try:
@@ -1151,7 +1233,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
             else:
                 raise
         
-        # Generate and create BareMetalHost - now passing server_vendor
+        # Generate and create BareMetalHost - using determined server_vendor
         bmh = generate_baremetal_host(
             name=server_name,
             namespace=target_namespace,
@@ -1160,7 +1242,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, **kwargs):
             ipmi_username=ipmi_username,
             ipmi_password=ipmi_password,
             infra_env=infra_env,
-            server_vendor=server_vendor or unified_client.detect_server_type(server_name).value, 
+            server_vendor=server_vendor,
             labels=spec.get('labels', {})
         )
         
