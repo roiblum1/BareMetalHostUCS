@@ -14,55 +14,70 @@ spec:
         properties:
           spec:
             type: object
+            required:
+            - infraEnv
             properties:
               serverName:
                 type: string
-                description: "Name of the server in UCS (defaults to CR name if not specified)"
+                description: "Name of the server to look up in management systems"
               namespace:
                 type: string
-                description: "Target namespace for BareMetalHost (defaults to current namespace)"
+                description: "Target namespace for the BareMetalHost resource"
               infraEnv:
                 type: string
-                description: "InfraEnv name for the host"
-              ipmiUsername:
-                type: string
-                description: "IPMI username (optional, defaults to operator config)"
-                default: "admin"
-              ipmiPasswordSecret:
-                type: object
-                description: "Reference to secret containing IPMI password"
-                properties:
-                  name:
-                    type: string
-                  key:
-                    type: string
-                    default: "password"
+                description: "InfraEnv name for the BareMetalHost"
               labels:
                 type: object
                 additionalProperties:
                   type: string
-                description: "Additional labels to add to BareMetalHost"
-            required:
-            - infraEnv
+                description: "Additional labels to apply to the BareMetalHost"
+          metadata:
+            type: object
+            properties:
+              annotations:
+                type: object
+                additionalProperties:
+                  type: string
+                description: "Annotations for the resource"
+                properties:
+                  server_vendor:
+                    type: string
+                    enum: ["HP", "Dell", "Cisco"]
+                    description: "Server vendor type - must be HP, Dell, or Cisco"
           status:
             type: object
             properties:
               phase:
                 type: string
-                description: "Current phase of the operation"
-                enum: ["Processing", "Completed", "Failed"]
+                enum: ["Processing", "Buffered", "Completed", "Failed"]
+                description: "Current phase of the BareMetalHost generation"
               message:
                 type: string
-                description: "Human readable message"
+                description: "Human-readable message about the current status"
+              bufferedAt:
+                type: string
+                description: "ISO timestamp when the server was buffered"
+              macAddress:
+                type: string
+                description: "MAC address discovered from management system"
+              ipmiAddress:
+                type: string
+                description: "IPMI/management IP address discovered"
               bmhName:
                 type: string
-                description: "Name of created BareMetalHost"
+                description: "Name of the created BareMetalHost resource"
               bmhNamespace:
                 type: string
-                description: "Namespace of created BareMetalHost"
+                description: "Namespace of the created BareMetalHost resource"
     subresources:
       status: {}
     additionalPrinterColumns:
+    - name: Server
+      type: string
+      jsonPath: .spec.serverName
+    - name: Vendor
+      type: string
+      jsonPath: .metadata.annotations.server_vendor
     - name: Phase
       type: string
       jsonPath: .status.phase
@@ -72,6 +87,10 @@ spec:
     - name: Message
       type: string
       jsonPath: .status.message
+      priority: 1
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
   scope: Namespaced
   names:
     plural: baremetalhostgenerators
