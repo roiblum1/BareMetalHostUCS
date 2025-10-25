@@ -1,18 +1,15 @@
-import requests
-import json
 import logging
-import re
-from urllib3.exceptions import InsecureRequestWarning
-from urllib3 import disable_warnings
 from enum import Enum
-from typing import Tuple, Optional, List, Dict
+from typing import Optional, Tuple
 
-# Disable SSL warnings for self-signed certificates
+import requests
+from urllib3 import disable_warnings
+from urllib3.exceptions import InsecureRequestWarning
+
+# Disable SSL warnings
 disable_warnings(InsecureRequestWarning)
 
-# Configure logging
-logger = logging.getLogger('unified_server_client')
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class ServerType(Enum):
@@ -495,48 +492,3 @@ class UnifiedServerClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - ensure cleanup"""
         self.disconnect()
-
-
-# Example usage
-if __name__ == "__main__":
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # Create unified client with all credentials
-    client = UnifiedServerClient(
-        # HP OneView
-        oneview_ip="192.168.1.100",
-        oneview_username="administrator",
-        oneview_password="password",
-        # Cisco UCS
-        ucs_central_ip="192.168.1.200",
-        central_username="admin",
-        central_password="password",
-        manager_username="admin",
-        manager_password="password",
-        # Dell OME
-        ome_ip="192.168.1.300",
-        ome_username="admin",
-        ome_password="password"
-    )
-    
-    # Use context manager for automatic cleanup
-    with client:
-        # Test different server types
-        test_servers = [
-            "ocp4-roi-rf-compute-02",    # HP server
-            "ocp4-roi-compute-02",        # Cisco server
-            "ocp4-roi-ome-compute-02"     # Dell server
-        ]
-        
-        for server_name in test_servers:
-            try:
-                mac, mgmt_ip = client.get_server_info(server_name)
-                print(f"\nServer: {server_name}")
-                print(f"  MAC Address: {mac}")
-                print(f"  Management IP: {mgmt_ip}")
-            except Exception as e:
-                print(f"\nError getting info for {server_name}: {e}")
