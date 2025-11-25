@@ -149,8 +149,8 @@ class DellServerStrategy(ServerStrategy):
                             logger.info(f"Using 'data' server logic for {server_name}")
                             last_network_interface = network_interfaces[-1]
                             last_port = last_network_interface.get("Ports", [])[-1]
-                            partition = last_port.get("Partition", [])[-1]
-                            mac_address = partition.get("CurrentMacAddress")
+                            partitions = last_port.get("Partitions", [])[-1]
+                            mac_address = partitions.get("CurrentMacAddress")
                             logger.info(f"MAC address found for server {server_name}: {mac_address}")
                             return mac_address
 
@@ -161,7 +161,7 @@ class DellServerStrategy(ServerStrategy):
 
                         if ports:
                             first_port = ports[0]
-                            partitions = first_port.get("Partition", [])
+                            partitions = first_port.get("Partitions", [])
                             logger.info(f"Partitions found: {len(partitions)} partitions")
 
                             if partitions:
