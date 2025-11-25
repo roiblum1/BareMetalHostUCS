@@ -60,39 +60,54 @@ class DellServerStrategy(ServerStrategy):
     
     def get_server_info(self, server_name: str) -> Tuple[Optional[str], Optional[str]]:
         self.ensure_connected()
-        
+
         device_url = f"{self.base_url}/ProfileService/Profiles"
-        skip = 0 
-        top = 130 
-        
+        skip = 0
+        top = 130
+
+        logger.info(f"Searching for Dell server profile: {server_name}")
+
         while True:
             device_url_with_pagination = f"{device_url}?$skip={skip}&$top={top}"
             response = self._session.get(device_url_with_pagination)
             response.raise_for_status()
             dell_servers_response = response.json()
             dell_servers = dell_servers_response.get("value", [])
-            logger.info(f"Searching for server: {server_name}")
+
+            logger.debug(f"Retrieved {len(dell_servers)} profiles (skip={skip}, top={top})")
+
             for server in dell_servers:
-                logger.debug(f"Checking server profile {server.get('ProfileName')}")
-                if 'ProfileName' in server:
-                    profile_name_upper = server['ProfileName'].upper()
-                    server_name_upper = server_name.upper()
-                    if profile_name_upper == server_name_upper:
-                        logger.debug(f"Found server profile: {server_name}")
-                        idrac_ip = server.get("TargetName")
-                        if idrac_ip is None:
-                            logger.error(f"IDRAC IP is None for server: {server_name}")
-                        mac_address = self._get_dell_mac_address(idrac_ip, server_name)
-                        if mac_address is None:
-                            logger.error(f"MAC address is None for server: {server_name}")
-                        if mac_address and idrac_ip:
-                            return mac_address, idrac_ip
-                        else:
-                            logger.error(f"Could not retrieve MAC or IDRAC IP for server: {server_name}")
+                profile_name = server.get('ProfileName')
+                if not profile_name:
+                    continue
+
+                logger.debug(f"Checking server profile: {profile_name}")
+
+                if profile_name.upper() == server_name.upper():
+                    logger.info(f"Found matching server profile: {profile_name}")
+                    idrac_ip = server.get("TargetName")
+
+                    if not idrac_ip:
+                        logger.error(f"TargetName (iDRAC IP) is missing for server: {server_name}")
+                        return None, None
+
+                    logger.debug(f"iDRAC IP for {server_name}: {idrac_ip}")
+                    mac_address = self._get_dell_mac_address(idrac_ip, server_name)
+
+                    if not mac_address:
+                        logger.error(f"Failed to retrieve MAC address for server: {server_name}")
+                        return None, None
+
+                    logger.info(f"Successfully retrieved server info - MAC: {mac_address}, iDRAC: {idrac_ip}")
+                    return mac_address, idrac_ip
+
+            # Check if we've reached the end of pagination
             if len(dell_servers) < top:
-                logger.error(f"No matching server profile found for: {server_name}")
+                logger.error(f"Server profile '{server_name}' not found in Dell OME after checking {skip + len(dell_servers)} profiles")
                 return None, None
+
             skip += top
+            logger.debug(f"No match found in this batch, fetching next {top} profiles...")
             
     def _get_dell_mac_address(self, idrac_ip: str, server_name: str) -> Optional[str]:
         self.ensure_connected()
