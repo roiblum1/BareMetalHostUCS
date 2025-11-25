@@ -118,13 +118,13 @@ spec:
                 secretKeyRef:
                   name: hp-oneview-credentials
                   key: password
-            # HP iLO credentials (for IPMI)
-            - name: HP_ILO_USERNAME
+            # HP iLO BMC credentials (for IPMI - used by Metal3 to provision servers)
+            - name: HP_BMC_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: hp-ilo-credentials
                   key: username
-            - name: HP_ILO_PASSWORD
+            - name: HP_BMC_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: hp-ilo-credentials
@@ -172,17 +172,29 @@ spec:
                 secretKeyRef:
                   name: dell-ome-credentials
                   key: password
-            # Dell iDRAC credentials (for IPMI)
-            - name: DELL_IDRAC_USERNAME
+            # Dell iDRAC BMC credentials (for IPMI - used by Metal3 to provision servers)
+            - name: DELL_BMC_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: dell-idrac-credentials
                   key: username
-            - name: DELL_IDRAC_PASSWORD
+            - name: DELL_BMC_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: dell-idrac-credentials
                   key: password
+            # Cisco CIMC BMC credentials (for IPMI - used by Metal3 to provision servers)
+            - name: CISCO_BMC_USERNAME
+              value: "admin"  # Default Cisco CIMC username
+            - name: CISCO_BMC_PASSWORD
+              value: "password"  # Replace with your Cisco CIMC password
+            # Optional: Logging and buffer configuration
+            - name: LOG_LEVEL
+              value: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+            - name: MAX_AVAILABLE_SERVERS
+              value: "20"  # Maximum number of available BareMetalHosts to maintain
+            - name: BUFFER_CHECK_INTERVAL
+              value: "30"  # Interval in seconds to check buffer and release servers
           resources:
             requests:
               memory: "256Mi"
