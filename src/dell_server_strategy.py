@@ -115,6 +115,8 @@ class DellServerStrategy(ServerStrategy):
         skip = 0
         top = 40
 
+        logger.info(f"Searching for device with iDRAC IP: {idrac_ip}")
+
         while True:
             device_url_with_pagination = f"{device_url}?$skip={skip}&$top={top}"
             response = self._session.get(device_url_with_pagination)
@@ -122,48 +124,58 @@ class DellServerStrategy(ServerStrategy):
             devices_response = response.json()
 
             devices = devices_response.get("value", [])
+            logger.debug(f"Retrieved {len(devices)} devices (skip={skip}, top={top})")
 
-            device = next((device for device in devices if str(device.get("DeviceName")) == str(idrac_ip)), None)
+            # Search for device in current batch
+            for device in devices:
+                device_name = str(device.get("DeviceName", ""))
+                logger.debug(f"Checking device: {device_name}")
 
-            if device:
-                logger.debug(f"The device is {device}, and his type is {type(device)}")
-                device_id = device.get("Id")
+                if device_name == str(idrac_ip):
+                    logger.info(f"Found matching device: {device_name}")
+                    device_id = device.get("Id")
 
-                inventory_details_url = f"{self.base_url}/DeviceService/Devices({device_id})/InventoryDetails('serverNetworkInterfaces')"
-                try:
-                    response = self._session.get(inventory_details_url)
-                    response.raise_for_status()
-                    inventory_details_response = response.json()
+                    inventory_details_url = f"{self.base_url}/DeviceService/Devices({device_id})/InventoryDetails('serverNetworkInterfaces')"
+                    try:
+                        response = self._session.get(inventory_details_url)
+                        response.raise_for_status()
+                        inventory_details_response = response.json()
 
-                    network_interfaces = inventory_details_response.get("InventoryInfo", [])
-                    logger.debug(f"Network interfaces found: {network_interfaces}")
+                        network_interfaces = inventory_details_response.get("InventoryInfo", [])
+                        logger.debug(f"Network interfaces found: {len(network_interfaces)} interfaces")
 
-                    if network_interfaces:
-                        if "data" in server_name.lower():
-                            last_network_interface = network_interfaces[-1]
-                            last_port = last_network_interface.get("Ports", [])[-1]
-                            partition = last_port.get("Partition", [])[-1]
-                            mac_address = partition.get("CurrentMacAddress")
-                            logger.info(f"Here is the MAC address found for server {server_name}: {mac_address}")
-                            return mac_address
-                        first_interface = network_interfaces[0]
-                        ports = first_interface.get("Ports", [])
-                        if ports:
-                            first_port = ports[0]
-                            partitions = first_port.get("Partition", [])
-                            if partitions:
-                                first_partition = partitions[0]
-                                mac_address = first_partition.get("CurrentMacAddress")
-                                logger.info(f"Here is the MAC address found for server {server_name}: {mac_address}")
+                        if network_interfaces:
+                            if "data" in server_name.lower():
+                                last_network_interface = network_interfaces[-1]
+                                last_port = last_network_interface.get("Ports", [])[-1]
+                                partition = last_port.get("Partition", [])[-1]
+                                mac_address = partition.get("CurrentMacAddress")
+                                logger.info(f"MAC address found for server {server_name}: {mac_address}")
                                 return mac_address
-                except Exception as e:
-                    logger.error(f"Failed to retrieve inventory details for device {device_id}: {e}")
-                    return None
+                            first_interface = network_interfaces[0]
+                            ports = first_interface.get("Ports", [])
+                            if ports:
+                                first_port = ports[0]
+                                partitions = first_port.get("Partition", [])
+                                if partitions:
+                                    first_partition = partitions[0]
+                                    mac_address = first_partition.get("CurrentMacAddress")
+                                    logger.info(f"MAC address found for server {server_name}: {mac_address}")
+                                    return mac_address
+
+                        logger.error(f"No network interfaces or MAC address found for device {device_id}")
+                        return None
+                    except Exception as e:
+                        logger.error(f"Failed to retrieve inventory details for device {device_id}: {e}")
+                        return None
 
             # Check if we've reached the end of pagination
             if len(devices) < top:
+                logger.error(f"Device with iDRAC IP '{idrac_ip}' not found in Dell OME after checking {skip + len(devices)} devices")
                 break
+
             skip += top
+            logger.debug(f"No match found in this batch, fetching next {top} devices...")
 
         return None 
     
