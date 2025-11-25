@@ -146,6 +146,7 @@ class DellServerStrategy(ServerStrategy):
                 if network_interfaces:
                     try:
                         if "data" in server_name:
+                            logger.debug(f"Using 'data' server logic for {server_name}")
                             last_network_interface = network_interfaces[-1]
                             last_port = last_network_interface.get("Ports", [])[-1]
                             partition = last_port.get("Partition", [])[-1]
@@ -154,20 +155,29 @@ class DellServerStrategy(ServerStrategy):
                             return mac_address
 
                         first_interface = network_interfaces[0]
+                        logger.debug(f"First interface: {first_interface}")
                         ports = first_interface.get("Ports", [])
+                        logger.debug(f"Ports found: {len(ports)} ports")
+
                         if ports:
                             first_port = ports[0]
                             partitions = first_port.get("Partition", [])
+                            logger.debug(f"Partitions found: {len(partitions)} partitions")
+
                             if partitions:
                                 first_partition = partitions[0]
                                 mac_address = first_partition.get("CurrentMacAddress")
                                 logger.info(f"MAC address found for server {server_name}: {mac_address}")
                                 return mac_address
+                            else:
+                                logger.error(f"No partitions found in first port for device {device_id}")
+                        else:
+                            logger.error(f"No ports found in first interface for device {device_id}")
                     except Exception as e:
                         logger.error(f"Failed to extract MAC from inventory for device {device_id}: {e}")
                         return None
 
-                logger.error(f"No network interfaces found for device {device_id}")
+                logger.error(f"No network interfaces or failed to extract MAC for device {device_id}")
                 return None
 
             # Check if we've reached the end of pagination
