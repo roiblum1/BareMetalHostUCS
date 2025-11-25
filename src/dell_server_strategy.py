@@ -136,13 +136,20 @@ class DellServerStrategy(ServerStrategy):
                     device_id = device.get("Id")
 
                     inventory_details_url = f"{self.base_url}/DeviceService/Devices({device_id})/InventoryDetails('serverNetworkInterfaces')"
+                    logger.debug(f"Fetching inventory from URL: {inventory_details_url}")
                     try:
                         response = self._session.get(inventory_details_url)
                         response.raise_for_status()
                         inventory_details_response = response.json()
 
+                        logger.debug(f"Inventory response keys: {inventory_details_response.keys()}")
+                        logger.debug(f"Full inventory response: {inventory_details_response}")
                         network_interfaces = inventory_details_response.get("InventoryInfo", [])
-                        logger.debug(f"Network interfaces found: {len(network_interfaces)} interfaces")
+                        logger.info(f"Network interfaces found: {len(network_interfaces)} interfaces for device {device_id}")
+
+                        if not network_interfaces:
+                            logger.error(f"No network interfaces in InventoryInfo for device {device_id}. Full response: {inventory_details_response}")
+                            return None
 
                         if network_interfaces:
                             if "data" in server_name.lower():
