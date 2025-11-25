@@ -1,0 +1,43 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }}.
+
+The BareMetalHost Generator Operator has been deployed to namespace: {{ .Release.Namespace }}
+
+Configured Vendors:
+{{- if .Values.hpOneView.enabled }}
+  ✓ HP OneView: {{ .Values.hpOneView.ip }}
+{{- end }}
+{{- if .Values.ciscoUCS.enabled }}
+  ✓ Cisco UCS Central: {{ .Values.ciscoUCS.central.ip }}
+{{- end }}
+{{- if .Values.dellOME.enabled }}
+  ✓ Dell OME: {{ .Values.dellOME.ip }}
+{{- end }}
+
+Buffer Configuration:
+  - Max Available Servers: {{ .Values.operator.maxAvailableServers }}
+  - Buffer Check Interval: {{ .Values.operator.bufferCheckInterval }}s
+
+To check the operator status:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "bmh-generator-operator.name" . }}
+
+To view operator logs:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "bmh-generator-operator.name" . }} -f
+
+To create a BareMetalHost:
+  cat <<EOF | kubectl apply -f -
+  apiVersion: infra.example.com/v1alpha1
+  kind: BareMetalHostGenerator
+  metadata:
+    name: my-server
+    namespace: default
+  spec:
+    infraEnv: my-infraenv
+    serverName: my-server-01
+  EOF
+
+To list all BareMetalHostGenerators:
+  kubectl get bmhgen -A
+
+For more information, visit: {{ .Chart.Home }}

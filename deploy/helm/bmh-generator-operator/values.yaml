@@ -1,0 +1,162 @@
+# Default values for bmh-generator-operator
+
+# Container image configuration
+image:
+  repository: quay.io/your-org/bmh-generator-operator
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Operator configuration
+operator:
+  # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  logLevel: INFO
+
+  # Buffer management
+  maxAvailableServers: 20
+  bufferCheckInterval: 30  # seconds
+
+  # Number of replica pods
+  replicas: 1
+
+  # Namespace to deploy operator (defaults to release namespace)
+  namespace: ""
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "bmh-generator-operator"
+
+# RBAC
+rbac:
+  create: true
+
+# Pod Security Context
+podSecurityContext:
+  runAsNonRoot: false
+  # fsGroup: 2000
+
+# Container Security Context
+securityContext:
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# Resources
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Liveness probe
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Readiness probe (disabled by default as operator uses liveness only)
+readinessProbe:
+  enabled: false
+
+# HP OneView Configuration
+hpOneView:
+  enabled: false
+  # IP address of HP OneView instance
+  ip: ""
+  # Username for HP OneView
+  username: "administrator"
+  # Password for HP OneView (use existingSecret for production)
+  password: ""
+
+  # BMC credentials for HP iLO
+  bmc:
+    username: "Administrator"
+    password: ""
+
+# Cisco UCS Configuration
+ciscoUCS:
+  enabled: false
+  # UCS Central configuration
+  central:
+    ip: ""
+    username: "admin"
+    password: ""
+  # UCS Manager credentials
+  manager:
+    username: "admin"
+    password: ""
+
+  # BMC credentials for Cisco CIMC
+  bmc:
+    username: "admin"
+    password: ""
+
+# Dell OME Configuration
+dellOME:
+  enabled: false
+  # Dell OpenManage Enterprise IP
+  ip: ""
+  # Username for Dell OME
+  username: "admin"
+  # Password for Dell OME (use existingSecret for production)
+  password: ""
+
+  # BMC credentials for Dell iDRAC
+  bmc:
+    username: "root"
+    password: "calvin"
+
+# Existing secret for credentials (recommended for production)
+# If set, the above passwords will be ignored
+existingSecret:
+  enabled: false
+  name: "bmh-operator-credentials"
+  keys:
+    # HP OneView
+    hpOneViewPassword: "hp-oneview-password"
+    hpBmcPassword: "hp-bmc-password"
+    # Cisco UCS
+    ucsCentralPassword: "ucs-central-password"
+    ucsManagerPassword: "ucs-manager-password"
+    ciscoBmcPassword: "cisco-bmc-password"
+    # Dell OME
+    dellOmePassword: "dell-ome-password"
+    dellBmcPassword: "dell-bmc-password"
+
+# Install CRD
+crd:
+  install: true
+
+# Additional environment variables
+extraEnv: []
+  # - name: CUSTOM_VAR
+  #   value: "custom-value"
+
+# Additional volumes
+extraVolumes: []
+
+# Additional volume mounts
+extraVolumeMounts: []

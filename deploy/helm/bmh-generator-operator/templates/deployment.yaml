@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bmh-generator-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bmh-generator-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      {{- include "bmh-generator-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      labels:
+        {{- include "bmh-generator-operator.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "bmh-generator-operator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: operator
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+          - kopf
+          - run
+          - --liveness=http://0.0.0.0:8080/healthz
+          - /app/src/operator_bmh_gen.py
+          - --all-namespaces
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        {{- if .Values.livenessProbe }}
+        livenessProbe:
+          {{- toYaml .Values.livenessProbe | nindent 12 }}
+        {{- end }}
+        {{- if and .Values.readinessProbe .Values.readinessProbe.enabled }}
+        readinessProbe:
+          {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
+        {{- end }}
+        env:
+        # Logging configuration
+        - name: LOG_LEVEL
+          value: {{ .Values.operator.logLevel | quote }}
+
+        # Buffer configuration
+        - name: MAX_AVAILABLE_SERVERS
+          value: {{ .Values.operator.maxAvailableServers | quote }}
+        - name: BUFFER_CHECK_INTERVAL
+          value: {{ .Values.operator.bufferCheckInterval | quote }}
+
+        {{- if .Values.hpOneView.enabled }}
+        # HP OneView configuration
+        - name: ONEVIEW_IP
+          value: {{ .Values.hpOneView.ip | quote }}
+        - name: ONEVIEW_USERNAME
+          value: {{ .Values.hpOneView.username | quote }}
+        - name: ONEVIEW_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.hpOneViewPassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: ONEVIEW_PASSWORD
+              {{- end }}
+        - name: HP_BMC_USERNAME
+          value: {{ .Values.hpOneView.bmc.username | quote }}
+        - name: HP_BMC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.hpBmcPassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: HP_BMC_PASSWORD
+              {{- end }}
+        {{- end }}
+
+        {{- if .Values.ciscoUCS.enabled }}
+        # Cisco UCS configuration
+        - name: UCS_CENTRAL_IP
+          value: {{ .Values.ciscoUCS.central.ip | quote }}
+        - name: UCS_CENTRAL_USERNAME
+          value: {{ .Values.ciscoUCS.central.username | quote }}
+        - name: UCS_CENTRAL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.ucsCentralPassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: UCS_CENTRAL_PASSWORD
+              {{- end }}
+        - name: UCS_MANAGER_USERNAME
+          value: {{ .Values.ciscoUCS.manager.username | quote }}
+        - name: UCS_MANAGER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.ucsManagerPassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: UCS_MANAGER_PASSWORD
+              {{- end }}
+        - name: CISCO_BMC_USERNAME
+          value: {{ .Values.ciscoUCS.bmc.username | quote }}
+        - name: CISCO_BMC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.ciscoBmcPassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: CISCO_BMC_PASSWORD
+              {{- end }}
+        {{- end }}
+
+        {{- if .Values.dellOME.enabled }}
+        # Dell OME configuration
+        - name: OME_IP
+          value: {{ .Values.dellOME.ip | quote }}
+        - name: OME_USERNAME
+          value: {{ .Values.dellOME.username | quote }}
+        - name: OME_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.dellOmePassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: OME_PASSWORD
+              {{- end }}
+        - name: DELL_BMC_USERNAME
+          value: {{ .Values.dellOME.bmc.username | quote }}
+        - name: DELL_BMC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              {{- if .Values.existingSecret.enabled }}
+              name: {{ .Values.existingSecret.name }}
+              key: {{ .Values.existingSecret.keys.dellBmcPassword }}
+              {{- else }}
+              name: {{ include "bmh-generator-operator.fullname" . }}-credentials
+              key: DELL_BMC_PASSWORD
+              {{- end }}
+        {{- end }}
+
+        {{- with .Values.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+        {{- with .Values.extraVolumeMounts }}
+        volumeMounts:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

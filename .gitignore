@@ -167,9 +167,10 @@ Thumbs.db
 .container-*
 image-*.tar
 
-# Helm charts (if added later)
-charts/
+# Helm charts artifacts
 *.tgz
+helm/*/charts/
+helm/*/.helmignore
 
 # Generated documentation
 docs/build/
@@ -178,4 +179,16 @@ site/
 # Local test files
 test-*.yaml
 *-test.yaml
-example-*.yaml
+/tmp/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+
+# Minikube/local testing
+.minikube/
+*.tar
+
+# Documentation temp files
+CONFIGURATION_CHANGES.md
+CONFIG_README.md

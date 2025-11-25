@@ -1,0 +1,63 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "bmh-generator-operator.fullname" . }}
+  labels:
+    {{- include "bmh-generator-operator.labels" . | nindent 4 }}
+rules:
+  # BareMetalHostGenerator CRD permissions
+  - apiGroups: ["infra.example.com"]
+    resources: ["baremetalhostgenerators"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["infra.example.com"]
+    resources: ["baremetalhostgenerators/status"]
+    verbs: ["get", "update", "patch"]
+
+  # BareMetalHost permissions
+  - apiGroups: ["metal3.io"]
+    resources: ["baremetalhosts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["metal3.io"]
+    resources: ["baremetalhosts/status"]
+    verbs: ["get", "update", "patch"]
+
+  # NMStateConfig permissions
+  - apiGroups: ["agent-install.openshift.io"]
+    resources: ["nmstateconfigs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Secret permissions (for BMC credentials)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Events for operator logging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Kopf framework requirements
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "bmh-generator-operator.fullname" . }}
+  labels:
+    {{- include "bmh-generator-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "bmh-generator-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "bmh-generator-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
