@@ -10,11 +10,6 @@ from config import operator_logger
 disable_warnings(InsecureRequestWarning)
 logger = operator_logger
 
-# Import strategies after config to avoid circular imports
-from hp_server_stategy import HPServerStrategy
-from dell_server_strategy import DellServerStrategy
-from ucs_server_strategy import CiscoServerStrategy
-
 class ServerType(Enum):
     HP = "hp"
     DELL = "dell"
@@ -86,14 +81,26 @@ class ServerTypeDetector:
             return ServerType.CISCO
 
 class ServerStrategyFactory:
-    _strategies: Dict[ServerType, Type[ServerStrategy]] = {
-        ServerType.HP: HPServerStrategy,
-        ServerType.DELL: DellServerStrategy,
-        ServerType.CISCO: CiscoServerStrategy,
-    }
+    # Lazy import to avoid circular dependency
+    _strategies: Dict[ServerType, Type[ServerStrategy]] = {}
+
+    @classmethod
+    def _init_strategies(cls):
+        """Lazy initialization of strategies to avoid circular imports"""
+        if not cls._strategies:
+            from hp_server_stategy import HPServerStrategy
+            from dell_server_strategy import DellServerStrategy
+            from ucs_server_strategy import CiscoServerStrategy
+
+            cls._strategies = {
+                ServerType.HP: HPServerStrategy,
+                ServerType.DELL: DellServerStrategy,
+                ServerType.CISCO: CiscoServerStrategy,
+            }
 
     @classmethod
     def create_strategy(cls, server_type: ServerType, credentials: Dict[str, str]) -> ServerStrategy:
+        cls._init_strategies()  # Ensure strategies are loaded
         strategy_class = cls._strategies.get(server_type)
         if not strategy_class:
             raise ValueError(f"No strategy found for server type: {server_type}")

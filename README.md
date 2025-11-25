@@ -1,515 +1,447 @@
 # BareMetalHost Generator Operator
 
-A Kubernetes operator that automatically creates BareMetalHost resources by querying multiple server management systems (HP OneView, Cisco UCS Central, and Dell OpenManage Enterprise). This operator simplifies the process of onboarding bare metal servers from different vendors into Metal3 and OpenShift bare metal deployments.
+A Kubernetes operator that automatically creates BareMetalHost resources by querying multiple server management systems (HP OneView, Cisco UCS Central, and Dell OpenManage Enterprise). This operator bridges vendor-specific management systems with Metal3/OpenShift bare metal deployments.
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.24%2B-blue.svg)](https://kubernetes.io/)
 
 ## Overview
 
 The BareMetalHostGenerator operator:
-- Connects to multiple server management systems:
-  - **HP OneView** for HP ProLiant servers
-  - **Cisco UCS Central** for Cisco UCS servers
-  - **Dell OpenManage Enterprise (OME)** for Dell PowerEdge servers
-- Automatically detects server vendor based on annotations or naming conventions
-- Queries the appropriate management system for server information (MAC addresses and management IPs)
-- Creates BareMetalHost resources with vendor-specific BMC configurations
-- Generates BMC secrets for IPMI/Redfish/iDRAC authentication
-- Implements a buffering mechanism to limit the number of available servers
-- Integrates with OpenShift Agent-based Installation workflows
+- ✅ Connects to multiple server management systems (HP OneView, Cisco UCS, Dell OME)
+- ✅ Automatically queries server information (MAC addresses, BMC IPs)
+- ✅ Creates BareMetalHost resources with vendor-specific BMC configurations
+- ✅ Manages buffer to limit available servers (prevents resource exhaustion)
+- ✅ Generates BMC secrets with vendor-specific credentials
+- ✅ Supports OpenShift Agent-based Installation workflows
+- ✅ Handles NMStateConfig for Dell servers with VLAN configuration
 
 ## Key Features
 
-- **Multi-vendor support**: Handles HP, Cisco, and Dell servers with appropriate BMC protocols
-- **Automatic vendor detection**: Uses explicit annotations or server naming patterns
-- **Buffer management**: Limits available BareMetalHosts to prevent resource exhaustion
+- **Multi-vendor support**: HP ProLiant (iLO), Cisco UCS (CIMC), Dell PowerEdge (iDRAC)
+- **Automatic vendor detection**: Via annotations or naming patterns
+- **Smart buffering**: Limits available BareMetalHosts to 20 (configurable)
 - **Vendor-specific BMC protocols**:
-  - HP: Redfish virtual media
-  - Dell: iDRAC virtual media  
-  - Cisco: IPMI
-- **Flexible credential management**: Separate credentials for each vendor's management system
-- **Status tracking**: Detailed status updates including Processing, Buffered, Completed, and Failed states
+  - HP: `redfish-virtualmedia://`
+  - Dell: `idrac-virtualmedia://`
+  - Cisco: `ipmi://`
+- **Thread-safe buffer management**: Background thread for periodic buffer checks
+- **Flexible credentials**: Separate credentials per vendor (management system + BMC)
 
 ## Architecture
 
-The operator consists of:
-- **Custom Resource Definition (CRD)**: `BareMetalHostGenerator` - defines the desired server configuration
-- **Controller**: Watches for CRD creation and handles server lookup, buffering, and BMH creation
-- **UnifiedServerClient**: Interfaces with multiple vendor management systems
-- **Buffer Manager**: Controls the number of available BareMetalHosts in the cluster
+```
+┌─────────────────────────────────────────────────────────────┐
+│ BareMetalHostGenerator CRD                                   │
+│ (User creates one per server)                                │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Kopf Operator (Main Thread)                                  │
+│ - Watches BMHGen resources                                   │
+│ - Queries vendor management systems                          │
+│ - Creates BMH resources                                      │
+└────────────┬────────────────────────────┬───────────────────┘
+             │                            │
+             ▼                            ▼
+┌────────────────────────┐    ┌──────────────────────────────┐
+│ UnifiedServerClient     │    │ Buffer Manager               │
+│ - HP OneView           │    │ - Limits available BMHs      │
+│ - Cisco UCS Central    │    │ - FIFO queue                 │
+│ - Dell OME             │    │ - Background thread (30s)    │
+└────────────────────────┘    └──────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Generated Resources                                           │
+│ - BareMetalHost (Metal3)                                     │
+│ - Secret (BMC credentials)                                   │
+│ - NMStateConfig (Dell servers with VLAN)                     │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Prerequisites
 
-- Kubernetes cluster with Metal3 installed
-- One or more of the following management systems:
-  - HP OneView with API access
-  - Cisco UCS Central with registered UCS Managers
-  - Dell OpenManage Enterprise (OME) with managed servers
-- Appropriate RBAC permissions for the operator
-- Python 3.9+ environment (for development)
+- Kubernetes 1.24+ or OpenShift 4.12+
+- Metal3 operator installed
+- At least one vendor management system configured:
+  - HP OneView 8.x+
+  - Cisco UCS Central 2.0+
+  - Dell OpenManage Enterprise 3.x+
+- Python 3.9+ (for development)
 
-## Installation
+## Quick Start
 
-### 1. Deploy the CRD
+### Installation via Helm (Recommended)
 
+```bash
+# Add Helm repository (if published)
+# helm repo add bmh-generator https://your-registry/charts
+# helm repo update
+
+# Install with HP OneView
+helm install bmh-generator deploy/helm/bmh-generator-operator \
+  --namespace metal3-system \
+  --create-namespace \
+  --set hpOneView.enabled=true \
+  --set hpOneView.ip="10.0.0.1" \
+  --set hpOneView.password="your-password" \
+  --set hpOneView.bmc.password="ilo-password"
+
+# Or install with all vendors
+helm install bmh-generator deploy/helm/bmh-generator-operator \
+  --namespace metal3-system \
+  --create-namespace \
+  --values my-values.yaml
+```
+
+### Manual Installation
+
+1. **Deploy CRD:**
 ```bash
 kubectl apply -f deploy/crd.yaml
 ```
 
-### 2. Create Namespace and RBAC
-
+2. **Create namespace:**
 ```bash
-# Create the metal3-system namespace if it doesn't exist
 kubectl create namespace metal3-system
+```
 
-# Apply RBAC configuration
+3. **Deploy RBAC:**
+```bash
 kubectl apply -f deploy/rbac.yaml
 ```
 
-### 3. Configure Management System Credentials
-
-The operator needs credentials for each management system you plan to use. You don't need to configure all systems - only the ones you have.
-
-#### HP OneView Configuration
-
-```yaml
-# HP OneView credentials
-apiVersion: v1
-kind: Secret
-metadata:
-  name: hp-oneview-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-oneview-username"
-  password: "your-oneview-password"
----
-# HP iLO credentials (for BMC access)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: hp-ilo-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-ilo-username"
-  password: "your-ilo-password"
-```
-
-#### Cisco UCS Configuration
-
-```yaml
-# UCS Central credentials
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ucs-central-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-ucs-central-username"
-  password: "your-ucs-central-password"
----
-# UCS Manager credentials (used for all UCS Managers)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ucs-manager-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-ucs-manager-username"
-  password: "your-ucs-manager-password"
-```
-
-#### Dell OME Configuration
-
-```yaml
-# Dell OME credentials
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dell-ome-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-ome-username"
-  password: "your-ome-password"
----
-# Dell iDRAC credentials (for BMC access)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dell-idrac-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-idrac-username"
-  password: "your-idrac-password"
-```
-
-### 4. Configure Management System IPs
-
-Update the ConfigMap with your management system IP addresses:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: bmh-generator-config
-  namespace: metal3-system
-data:
-  # Only configure the systems you have
-  HP_ONEVIEW_IP: "10.0.0.1"    # HP OneView IP (optional)
-  UCS_CENTRAL_IP: "10.0.0.2"   # Cisco UCS Central IP (optional)
-  DELL_OME_IP: "10.0.0.3"      # Dell OME IP (optional)
-```
-
-### 5. Deploy the Operator
-
+4. **Create credentials secret:**
 ```bash
+kubectl create secret generic bmh-operator-credentials \
+  --namespace=metal3-system \
+  --from-literal=ONEVIEW_PASSWORD='your-oneview-password' \
+  --from-literal=HP_BMC_PASSWORD='your-ilo-password'
+```
+
+5. **Deploy operator:**
+```bash
+# Update deploy/deployment.yaml with your registry and credentials
 kubectl apply -f deploy/deployment.yaml
 ```
 
-### 6. Verify Installation
-
+6. **Verify:**
 ```bash
-# Check if the operator is running
-kubectl get pods -n metal3-system -l app=bmh-generator-operator
-
-# Check operator logs
+kubectl get pods -n metal3-system
 kubectl logs -n metal3-system -l app=bmh-generator-operator
-
-# Verify which management systems are configured
-kubectl logs -n metal3-system -l app=bmh-generator-operator | grep "Configured server management systems"
 ```
+
+## Configuration
+
+### Environment Variables
+
+The operator uses environment variables for configuration. See [.env.example](.env.example) for all options.
+
+#### Core Configuration
+```bash
+LOG_LEVEL=INFO                    # Logging level
+MAX_AVAILABLE_SERVERS=20          # Buffer limit
+BUFFER_CHECK_INTERVAL=30          # Check interval in seconds
+```
+
+#### HP OneView (Management System)
+```bash
+ONEVIEW_IP=10.0.0.1
+ONEVIEW_USERNAME=administrator
+ONEVIEW_PASSWORD=<secret>
+
+# BMC Credentials (for iLO)
+HP_BMC_USERNAME=Administrator
+HP_BMC_PASSWORD=<secret>
+```
+
+#### Cisco UCS (Management System)
+```bash
+UCS_CENTRAL_IP=10.0.0.2
+UCS_CENTRAL_USERNAME=admin
+UCS_CENTRAL_PASSWORD=<secret>
+UCS_MANAGER_USERNAME=admin
+UCS_MANAGER_PASSWORD=<secret>
+
+# BMC Credentials (for CIMC)
+CISCO_BMC_USERNAME=admin
+CISCO_BMC_PASSWORD=<secret>
+```
+
+#### Dell OME (Management System)
+```bash
+OME_IP=10.0.0.3
+OME_USERNAME=admin
+OME_PASSWORD=<secret>
+
+# BMC Credentials (for iDRAC)
+DELL_BMC_USERNAME=root
+DELL_BMC_PASSWORD=calvin
+```
+
+**Important:** Management system credentials are used by the operator to query server info. BMC credentials are used by Metal3/Ironic to provision servers.
 
 ## Usage
 
-### Creating a BareMetalHostGenerator
-
-Create a YAML file with your server configuration:
+### Create a BareMetalHostGenerator
 
 ```yaml
 apiVersion: infra.example.com/v1alpha1
 kind: BareMetalHostGenerator
 metadata:
-  name: my-server-01
-  namespace: openshift-machine-api
+  name: worker-01
+  namespace: default
   annotations:
-    server_vendor: "HP"  # HP, Dell, or Cisco
+    server_vendor: "HP"      # Explicit vendor (HP, DELL, CISCO)
+    vlan_id: "100"           # Optional: VLAN for Dell servers
 spec:
-  serverName: "ESXi-Host-01"  # Name of server in management system
-  namespace: "openshift-machine-api"  # Target namespace for BareMetalHost
-  infraEnv: "ocp4-cluster"  # InfraEnv name for OpenShift Agent-based installation
-  labels:  # Additional labels for the BareMetalHost
+  serverName: "ESXi-Host-01" # Name in management system
+  namespace: "default"        # Target namespace for BMH
+  infraEnv: "my-cluster"     # InfraEnv for OpenShift
+  labels:
     node-role.kubernetes.io/worker: ""
-    rack: "A1"
 ```
 
-### Server Vendor Detection
+### Apply and Monitor
 
-The operator determines the server vendor using:
+```bash
+# Create the resource
+kubectl apply -f worker-01.yaml
+
+# Check status
+kubectl get bmhgen -A
+
+# View details
+kubectl describe bmhgen worker-01
+
+# Check if BMH was created
+kubectl get bmh -A
+```
+
+### Status Phases
+
+- **Processing**: Querying management systems
+- **Buffered**: Server info retrieved, waiting for slot
+- **Completed**: BareMetalHost created successfully
+- **Failed**: Error occurred
+
+### Vendor Detection
+
+The operator detects vendor in this order:
 
 1. **Explicit annotation** (recommended):
    ```yaml
-   metadata:
-     annotations:
-       server_vendor: "HP"  # or "Dell" or "Cisco"
+   annotations:
+     server_vendor: "HP"
    ```
 
-2. **Naming convention** (fallback):
-   - Names containing 'rf' → HP servers
-   - Names containing 'ome' → Dell servers
-   - All others → Cisco servers
+2. **Name-based heuristics**:
+   - Contains `rf` → HP
+   - Contains `ome` → Dell
+   - Default → Cisco
 
-### Apply the Configuration
+## Buffer Management
 
-```bash
-# Create the BareMetalHostGenerator
-kubectl apply -f my-server.yaml
+The operator limits available (non-provisioned) BareMetalHosts:
 
-# Check status
-kubectl get bmhgen -n openshift-machine-api
-
-# Get detailed information
-kubectl describe bmhgen my-server-01 -n openshift-machine-api
-
-# Check if server was buffered
-kubectl get bmhgen my-server-01 -n openshift-machine-api -o jsonpath='{.status.phase}'
-```
-
-### Understanding Server Buffering
-
-The operator implements a buffering mechanism to prevent too many servers from being available at once:
-
-- **MAX_AVAILABLE_SERVERS**: 20 (default)
-- When the limit is reached, new servers are put in "Buffered" state
-- Buffered servers are automatically released when space becomes available
-- Buffer check runs every 30 seconds
-
-Status phases:
-- **Processing**: Operator is querying management systems
-- **Buffered**: Server information retrieved but waiting for available slot
-- **Completed**: BareMetalHost successfully created
-- **Failed**: Error occurred during processing
-
-### Monitoring Buffered Servers
+- **Default limit**: 20 servers
+- **Check interval**: 30 seconds
+- **Behavior**: New servers are buffered when limit reached
+- **Release**: FIFO - first buffered, first released
 
 ```bash
-# View all buffered servers
-kubectl get bmhgen --all-namespaces -o json | jq '.items[] | select(.status.phase=="Buffered") | {name: .metadata.name, namespace: .metadata.namespace, bufferedAt: .status.bufferedAt}'
+# Check buffer status
+kubectl get bmhgen -A -o json | jq '.items[] | select(.status.phase=="Buffered")'
 
-# Check available BareMetalHost count
-kubectl get bmh --all-namespaces -o json | jq '[.items[] | select(.status.provisioning.state != "provisioned")] | length'
-
-# Watch operator buffer management logs
-kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -i buffer
+# View available count
+kubectl get bmh -A -o json | jq '[.items[] | select(.status.provisioning.state != "provisioned")] | length'
 ```
 
-## Configuration Options
+## Helm Chart
 
-### BareMetalHostGenerator Spec
+### values.yaml Example
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `serverName` | string | No | Name of the server in management system (defaults to CR name) |
-| `namespace` | string | No | Target namespace for BareMetalHost (defaults to current namespace) |
-| `infraEnv` | string | Yes | InfraEnv name for OpenShift Agent-based installation |
-| `labels` | map | No | Additional labels to add to BareMetalHost |
-
-### BareMetalHostGenerator Annotations
-
-| Annotation | Values | Description |
-|------------|--------|-------------|
-| `server_vendor` | HP, Dell, Cisco | Explicitly specify server vendor |
-
-### Environment Variables
-
-The operator uses the following environment variables:
-
-| Variable | Description | Required | Used For |
-|----------|-------------|----------|----------|
-| `HP_ONEVIEW_IP` | HP OneView IP address | No* | HP servers |
-| `HP_ONEVIEW_USERNAME` | HP OneView username | No* | HP servers |
-| `HP_ONEVIEW_PASSWORD` | HP OneView password | No* | HP servers |
-| `UCS_CENTRAL_IP` | UCS Central IP address | No* | Cisco servers |
-| `UCS_CENTRAL_USERNAME` | UCS Central username | No* | Cisco servers |
-| `UCS_CENTRAL_PASSWORD` | UCS Central password | No* | Cisco servers |
-| `UCS_MANAGER_USERNAME` | UCS Manager username | No* | Cisco servers |
-| `UCS_MANAGER_PASSWORD` | UCS Manager password | No* | Cisco servers |
-| `DELL_OME_IP` | Dell OME IP address | No* | Dell servers |
-| `DELL_OME_USERNAME` | Dell OME username | No* | Dell servers |
-| `DELL_OME_PASSWORD` | Dell OME password | No* | Dell servers |
-| `IPMI_USERNAME` | Default IPMI/BMC username | Yes | All vendors |
-| `IPMI_PASSWORD` | Default IPMI/BMC password | Yes | All vendors |
-
-*At least one vendor's configuration must be provided
-
-## Generated Resources
-
-For each BareMetalHostGenerator, the operator creates:
-
-1. **BareMetalHost**: The main Metal3 resource with vendor-specific BMC configuration
-2. **Secret**: BMC credentials for server access (named based on vendor)
-
-### Vendor-Specific BMC Configurations
-
-#### HP Servers
 ```yaml
-spec:
+image:
+  repository: quay.io/your-org/bmh-generator-operator
+  tag: "1.0.0"
+
+operator:
+  logLevel: INFO
+  maxAvailableServers: 20
+  bufferCheckInterval: 30
+
+hpOneView:
+  enabled: true
+  ip: "10.0.0.1"
+  username: "administrator"
+  password: "password"
   bmc:
-    address: "redfish-virtualmedia://10.0.0.100/redfish/v1/Systems/1"
-    credentialsName: "hp-bmc-servername"
+    username: "Administrator"
+    password: "ilo-password"
+
+# Use existing secret (recommended for production)
+existingSecret:
+  enabled: true
+  name: "my-credentials"
 ```
 
-#### Dell Servers
-```yaml
-spec:
-  bmc:
-    address: "idrac-virtualmedia://10.0.0.101/redfish/v1/Systems/System.Embedded.1"
-    credentialsName: "dell-bmc-servername"
-```
+### Install/Upgrade
 
-#### Cisco Servers
-```yaml
-spec:
-  bmc:
-    address: "ipmi://10.0.0.102"
-    credentialsName: "cisco-bmc-servername"
+```bash
+# Install
+helm install bmh-generator deploy/helm/bmh-generator-operator -n metal3-system
+
+# Upgrade
+helm upgrade bmh-generator deploy/helm/bmh-generator-operator -n metal3-system
+
+# Uninstall
+helm uninstall bmh-generator -n metal3-system
 ```
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Management System Connection Errors**
-   ```bash
-   # Check operator logs for connection issues
-   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -E "Error|Failed|Warning"
-   
-   # Verify credentials are properly set
-   kubectl get secrets -n metal3-system
-   ```
-
-2. **Server Not Found**
-   ```bash
-   # Check if server name exists in management system
-   kubectl describe bmhgen <name> -n <namespace>
-   
-   # View detailed search logs
-   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep -i "Searching"
-   ```
-
-3. **Server Buffered Instead of Created**
-   ```bash
-   # Check current available count
-   kubectl get bmh --all-namespaces -o json | jq '[.items[] | select(.status.provisioning.state != "provisioned")] | length'
-   
-   # View buffer status
-   kubectl logs -n metal3-system -l app=bmh-generator-operator | grep "Current available BareMetalHosts"
-   ```
-
-4. **Wrong Vendor Detection**
-   ```bash
-   # Add explicit vendor annotation
-   kubectl annotate bmhgen <name> -n <namespace> server_vendor=HP --overwrite
-   ```
-
-### Debug Commands
+### Check Logs
 
 ```bash
-# Get all BareMetalHostGenerators with their status
-kubectl get bmhgen --all-namespaces -o custom-columns=NAME:.metadata.name,NAMESPACE:.metadata.namespace,VENDOR:.metadata.annotations.server_vendor,PHASE:.status.phase,MESSAGE:.status.message
+# Operator logs
+kubectl logs -n metal3-system -l app.kubernetes.io/name=bmh-generator-operator -f
 
-# Check which management systems are available
-kubectl logs -n metal3-system deployment/bmh-generator-operator | head -50 | grep "Configured"
+# Buffer logs
+kubectl logs -n metal3-system -l app.kubernetes.io/name=bmh-generator-operator | grep -i buffer
 
-# Monitor buffer management in real-time
-kubectl logs -n metal3-system deployment/bmh-generator-operator -f | grep -i buffer
-
-# View failed generators
-kubectl get bmhgen --all-namespaces -o json | jq '.items[] | select(.status.phase=="Failed") | {name: .metadata.name, error: .status.message}'
+# Connection issues
+kubectl logs -n metal3-system -l app.kubernetes.io/name=bmh-generator-operator | grep -i error
 ```
+
+### Common Issues
+
+**1. "No valid configuration found"**
+- Ensure at least one vendor is configured with BMC credentials
+- Check: `kubectl logs ... | grep "Configured systems"`
+
+**2. "Server not found"**
+- Verify server name matches exactly
+- Check vendor annotation is correct
+- Review search logs: `kubectl logs ... | grep "Searching"`
+
+**3. "Buffered instead of created"**
+- Check available count: `kubectl get bmh -A -o json | jq '...'`
+- Wait for buffer check (30s interval)
+- Or increase `MAX_AVAILABLE_SERVERS`
+
+**4. Compilation/Import errors**
+- Operator now uses lazy imports to avoid circular dependencies
+- Check Python version is 3.9+
 
 ## Development
 
 ### Local Development
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+# Clone repository
+git clone https://github.com/roiblum1/BareMetalHostUCS.git
+cd BareMetalHostUCS
 
-2. Set environment variables for your available systems:
-   ```bash
-   # HP OneView (if available)
-   export HP_ONEVIEW_IP="10.0.0.1"
-   export HP_ONEVIEW_USERNAME="administrator"
-   export HP_ONEVIEW_PASSWORD="your-password"
-   
-   # Cisco UCS (if available)
-   export UCS_CENTRAL_IP="10.0.0.2"
-   export UCS_CENTRAL_USERNAME="admin"
-   export UCS_CENTRAL_PASSWORD="your-password"
-   export UCS_MANAGER_USERNAME="admin"
-   export UCS_MANAGER_PASSWORD="your-password"
-   
-   # Dell OME (if available)
-   export DELL_OME_IP="10.0.0.3"
-   export DELL_OME_USERNAME="admin"
-   export DELL_OME_PASSWORD="your-password"
-   
-   # IPMI credentials (required)
-   export IPMI_USERNAME="admin"
-   export IPMI_PASSWORD="password"
-   ```
+# Install dependencies
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
-3. Run locally:
-   ```bash
-   kopf run --liveness=http://0.0.0.0:8080/healthz src/operator_bmh_gen.py --all-namespaces
-   ```
+# Configure environment
+cp .env.example .env
+# Edit .env with your credentials
 
-### Testing Unified Server Client
-
-```python
-from src.operator_bmh_gen import UnifiedServerClient
-
-# Initialize client with available systems
-client = UnifiedServerClient(
-    oneview_ip='10.0.0.1',
-    oneview_username='admin',
-    oneview_password='password',
-    # Add other systems as needed
-)
-
-# Test server lookup with explicit vendor
-mac, ip = client.get_server_info('MyServer', server_vendor='HP')
-print(f"Found: MAC={mac}, IP={ip}")
-
-# Test auto-detection
-mac, ip = client.get_server_info('rf-compute-01')  # Auto-detects as HP
-print(f"Found: MAC={mac}, IP={ip}")
+# Run locally
+kopf run --liveness=http://0.0.0.0:8080/healthz src/operator_bmh_gen.py --all-namespaces
 ```
 
-### Building the Container
+### Build Container
 
 ```bash
-# Build the container
-docker build -t your-registry/bmh-generator-operator:latest .
+# Build
+docker build -t bmh-generator-operator:dev .
 
-# Push to registry
-docker push your-registry/bmh-generator-operator:latest
+# Or with podman
+podman build -t bmh-generator-operator:dev .
+
+# Test in minikube
+minikube image load bmh-generator-operator:dev
+kubectl run test --image=bmh-generator-operator:dev --image-pull-policy=Never
 ```
 
-## Buffer Management Details
+### Testing
 
-The operator implements sophisticated buffer management:
+```bash
+# Compile all Python files
+python3 -m py_compile src/*.py
 
-1. **Limit Enforcement**: Maximum 20 BareMetalHosts can be "available" (not provisioned)
-2. **Automatic Buffering**: When limit is reached, new servers are buffered with their discovered information
-3. **FIFO Release**: Buffered servers are released in order (first buffered, first released)
-4. **Periodic Checks**: Every 30 seconds, the operator checks if slots are available
-5. **Status Preservation**: Buffered servers maintain their discovered MAC and IP information
+# Test configuration
+python3 -c "from src.config import validate_configuration; print(validate_configuration())"
 
-## Security Considerations
+# Test imports
+python3 -c "from src.unified_server_client import UnifiedServerClient; print('OK')"
+```
 
-- Store all credentials in Kubernetes secrets
-- Use separate credentials for each vendor's management system
-- Different credentials for management systems vs BMC/IPMI access
-- Enable network policies to restrict operator communication
-- Regularly rotate credentials
-- Consider using external secret management solutions
-- Ensure secure communication with all management systems
+## Architecture Details
 
-## Multi-Vendor Workflow
+### Threading Model
 
-The operator follows this workflow:
+- **Main Thread**: Kopf event loop handles CRD events
+- **Background Thread**: Buffer check runs every 30 seconds
+- **Synchronization**: `threading.Lock` protects buffer operations (thread-safe across event loops)
 
-1. **Vendor Detection**: Determines vendor from annotation or naming pattern
-2. **System Selection**: Chooses primary management system based on vendor
-3. **Server Search**: Queries the primary system first, then others if not found
-4. **Information Extraction**: 
-   - HP: Queries OneView for server hardware and iLO information
-   - Cisco: Connects to UCS Central, finds domain, queries UCS Manager
-   - Dell: Queries OME for device information and iDRAC details
-5. **BMC Configuration**: Creates vendor-specific BMC address format
-6. **Resource Creation**: Generates BareMetalHost with appropriate settings
+### Credential Model
+
+Two separate credential sets:
+
+1. **Management System**: Used by operator to query servers
+   - `ONEVIEW_USERNAME` / `ONEVIEW_PASSWORD`
+   - `UCS_CENTRAL_USERNAME` / `UCS_CENTRAL_PASSWORD`
+   - `OME_USERNAME` / `OME_PASSWORD`
+
+2. **BMC**: Used by Metal3/Ironic to provision servers
+   - `HP_BMC_USERNAME` / `HP_BMC_PASSWORD`
+   - `CISCO_BMC_USERNAME` / `CISCO_BMC_PASSWORD`
+   - `DELL_BMC_USERNAME` / `DELL_BMC_PASSWORD`
+
+### Strategy Pattern
+
+Each vendor implements `ServerStrategy`:
+- `HPServerStrategy` - HP OneView integration
+- `CiscoServerStrategy` - UCS Central/Manager integration
+- `DellServerStrategy` - Dell OME integration
+
+## Security
+
+- ✅ Store credentials in Kubernetes Secrets
+- ✅ Use separate credentials per vendor
+- ✅ Base64 encode all secret data
+- ✅ Enable RBAC
+- ✅ Run with least privilege ServiceAccount
+- ✅ Regularly rotate credentials
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
+Apache License 2.0 - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-For issues and questions:
-- Check the troubleshooting section
-- Review operator logs for detailed error messages
-- Verify management system connectivity
-- Open an issue in the project repository
+- **Documentation**: See [CLAUDE.md](CLAUDE.md) for development guide
+- **Issues**: [GitHub Issues](https://github.com/roiblum1/BareMetalHostUCS/issues)
+- **Logs**: Check operator logs for detailed error messages
+
+---
+
+**Maintained by**: Roi Blum
+**Repository**: https://github.com/roiblum1/BareMetalHostUCS
