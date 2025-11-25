@@ -42,16 +42,38 @@ stringData:
   username: "your-ome-username" # Replace with your Dell OME username
   password: "your-ome-password" # Replace with your Dell OME password
 ---
-# Default IPMI credentials secret (used for all servers)
+# HP BMC credentials secret (for IPMI access to HP servers)
 apiVersion: v1
 kind: Secret
 metadata:
-  name: default-ipmi-credentials
+  name: hp-bmc-credentials
   namespace: metal3-system
 type: Opaque
 stringData:
-  username: "your-ipmi-username" # Replace with your default IPMI username
-  password: "your-ipmi-password" # Replace with your default IPMI password
+  username: "Administrator" # Replace with your HP iLO username
+  password: "your-hp-bmc-password" # Replace with your HP iLO password
+---
+# Cisco BMC credentials secret (for IPMI access to Cisco servers)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cisco-bmc-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "admin" # Replace with your Cisco CIMC username
+  password: "your-cisco-bmc-password" # Replace with your Cisco CIMC password
+---
+# Dell BMC credentials secret (for IPMI access to Dell servers)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dell-bmc-credentials
+  namespace: metal3-system
+type: Opaque
+stringData:
+  username: "root" # Replace with your Dell iDRAC username
+  password: "your-dell-bmc-password" # Replace with your Dell iDRAC password
 ---
 # Configuration for management system IPs
 apiVersion: v1
@@ -150,16 +172,38 @@ spec:
                 secretKeyRef:
                   name: dell-ome-credentials
                   key: password
-            # Default IPMI credentials (used for all servers)
-            - name: DEFAULT_IPMI_USERNAME
+            # HP iLO BMC credentials (for IPMI - used by Metal3 to provision HP servers)
+            - name: HP_BMC_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: default-ipmi-credentials
+                  name: hp-bmc-credentials
                   key: username
-            - name: DEFAULT_IPMI_PASSWORD
+            - name: HP_BMC_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: default-ipmi-credentials
+                  name: hp-bmc-credentials
+                  key: password
+            # Cisco CIMC BMC credentials (for IPMI - used by Metal3 to provision Cisco servers)
+            - name: CISCO_BMC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: cisco-bmc-credentials
+                  key: username
+            - name: CISCO_BMC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cisco-bmc-credentials
+                  key: password
+            # Dell iDRAC BMC credentials (for IPMI - used by Metal3 to provision Dell servers)
+            - name: DELL_BMC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: dell-bmc-credentials
+                  key: username
+            - name: DELL_BMC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dell-bmc-credentials
                   key: password
             # Optional: Logging and buffer configuration
             - name: LOG_LEVEL
