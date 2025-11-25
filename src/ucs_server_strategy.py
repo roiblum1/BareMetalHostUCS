@@ -103,28 +103,38 @@ class CiscoServerStrategy(ServerStrategy):
                             pass
         return None, None
         
-    def _extract_ucs_management_ip(self, ucsm_handle, server_details) -> str:
-        mgmt_interfaces = ucsm_handle.query_children(
-            in_mo=server_details,
-            class_id="VnicIpV4PooledAddr"
-        )
-        
-        for iface in mgmt_interfaces:
-            if hasattr(iface, "addr") and iface.addr:
-                return str(iface.addr)
-        return ""
-    
-    def _extract_ucs_mac_address(self, ucsm_handle, server_details) -> str:
-        adapters = ucsm_handle.query_children(
-            in_mo=server_details,
-            class_id="VnicEther"
-        )
-        
-        if adapters:
-            sorted_adapters = sorted(adapters, key=lambda x: x.name[3:])
-            if sorted_adapters and hasattr(sorted_adapters[0], "addr"):
-                return sorted_adapters[0].addr
-        return ""
+    def _extract_ucs_management_ip(self, ucsm_handle, server_details) -> Optional[str]:
+        try:
+            mgmt_interfaces = ucsm_handle.query_children(
+                in_mo=server_details,
+                class_id="VnicIpV4PooledAddr"
+            )
+
+            for iface in mgmt_interfaces:
+                if hasattr(iface, "addr") and iface.addr:
+                    return str(iface.addr)
+        except Exception as e:
+            logger.warning(f"Failed to extract UCS management IP: {e}")
+
+        return None
+
+    def _extract_ucs_mac_address(self, ucsm_handle, server_details) -> Optional[str]:
+        try:
+            adapters = ucsm_handle.query_children(
+                in_mo=server_details,
+                class_id="VnicEther"
+            )
+
+            if adapters:
+                # Sort by adapter name (strip first 3 chars if name is long enough, e.g., "eth0" -> "0")
+                # Handle short names gracefully
+                sorted_adapters = sorted(adapters, key=lambda x: x.name[3:] if len(x.name) > 3 else x.name)
+                if sorted_adapters and hasattr(sorted_adapters[0], "addr"):
+                    return sorted_adapters[0].addr
+        except Exception as e:
+            logger.warning(f"Failed to extract UCS MAC address: {e}")
+
+        return None
     
     def clear_cache(self):
         """Clear any cached data."""

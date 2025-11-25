@@ -46,7 +46,9 @@ operator_logger.info("Kubernetes client initialized.")
 
 ucs_client = None
 buffer_manager = BufferManager(custom_api, core_api)
-global loop
+unified_client = None
+buffer_check_task = None
+buffer_thread = None
 loop = asyncio.new_event_loop()
 disable_warnings(InsecureRequestWarning)
 
@@ -87,8 +89,16 @@ def configure(settings: kopf.OperatorSettings, **_):
         asyncio.set_event_loop(loop)
         buffer_check_task = loop.create_task(buffer_manager.buffer_check_loop(unified_client, yaml_generator))
         buffer_logger.info("Started buffer check loop task.")
-        loop.run_forever()
-    threading.Thread(target=run_buffer_check).start()
+        try:
+            loop.run_forever()
+        except Exception as e:
+            buffer_logger.error(f"Buffer check loop crashed: {e}")
+        finally:
+            buffer_logger.info("Buffer check loop stopped")
+
+    global buffer_thread
+    buffer_thread = threading.Thread(target=run_buffer_check, daemon=True, name="BufferCheckThread")
+    buffer_thread.start()
     operator_logger.info(f"operator configuration completed successfully.")
 
 @kopf.on.create('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
@@ -102,8 +112,8 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     operator_logger.info(f"Metadata for BMHG {name}: {metadata}")
     
     server_vendor = annotations.get('server_vendor') if annotations else None
-    vlan_id = annotations.get('vlan_id') if annotations else None
-    
+    vlan_id = annotations.get('vlanId') if annotations else None
+
     operator_logger.info(f"Server vendor annotation: {server_vendor}")
     if not infra_env:
         raise kopf.PermanentError(f"infraEnv is required in the spec of BareMetalHostGenerator {name}")
@@ -116,6 +126,10 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     try:
         operator_logger.info(f"Searching for server info: {server_name}")
         mac_address, ip_address = unified_client.get_server_info(server_name, server_vendor)
+
+        if not mac_address or not ip_address:
+            raise kopf.PermanentError(f"Server {server_name} not found in any management system")
+
         operator_logger.info(f"Found server {server_name} with MAC: {mac_address}, IP: {ip_address}")
         if not server_vendor:
             detected_type = unified_client._detector.detect(server_name)
@@ -167,8 +181,10 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             "message": f"Successfully created BareMetalHost {server_name}",
             "bmhName": server_name,
             "bmhNamespace": target_namespace,
-            "server_vendor": server_vendor,
-            "vlan_id": vlan_id
+            "macAddress": mac_address,
+            "ipmiAddress": ip_address,
+            "serverVendor": server_vendor,
+            "vlanId": vlan_id
         }
         
         OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", target_namespace, "baremetalhostgenerators", name, status_update)
@@ -180,6 +196,14 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             "phase": "Error",
             "message": str(e)
         }
+        # Preserve MAC/IP if they were retrieved before error
+        if 'mac_address' in locals() and mac_address:
+            status_update["macAddress"] = mac_address
+        if 'ip_address' in locals() and ip_address:
+            status_update["ipmiAddress"] = ip_address
+        if 'server_vendor' in locals() and server_vendor:
+            status_update["serverVendor"] = server_vendor
+
         OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", target_namespace, "baremetalhostgenerators", name, status_update)
         raise kopf.PermanentError(f"Failed to create BareMetalHost for {server_name}: {e}")
     
@@ -197,8 +221,8 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
     if status.get('bmhName') and status.get('bmhNamespace'):
         bmh_name = status['bmhName']
         bmh_namespace = status['bmhNamespace']
-        server_vendor = status.get('server_vendor')
-        vlan_id = status.get('vlan_id')
+        server_vendor = status.get('serverVendor')
+        vlan_id = status.get('vlanId')
 
         try:
             # Delete NMStateConfig if exists
@@ -235,20 +259,29 @@ async def cleanup_fn(**kwargs):
     """Cleanup function called on operator shutdown"""
     operator_logger.info("Operator shutting down, cleaning up resources")
 
-    # Cancel buffer check task
-    global buffer_check_task
-    if buffer_check_task:
-        try:
-            loop.call_soon_threadsafe(buffer_check_task.cancel)
-            await asyncio.sleep(0)  # allow other tasks to run
-        except Exception as e:
-            buffer_logger.error(f"Error cancelling buffer check task: {str(e)}")
+    # Stop the background thread's event loop
+    global buffer_check_task, buffer_thread
+    try:
+        if loop and loop.is_running():
+            # Stop the loop from the main thread
+            loop.call_soon_threadsafe(loop.stop)
+            operator_logger.info("Sent stop signal to buffer check loop")
 
-    loop.stop()
+        # Give the thread a moment to clean up
+        if buffer_thread and buffer_thread.is_alive():
+            buffer_thread.join(timeout=5)
+            if buffer_thread.is_alive():
+                operator_logger.warning("Buffer check thread did not stop within timeout")
+            else:
+                operator_logger.info("Buffer check thread stopped successfully")
+    except Exception as e:
+        buffer_logger.error(f"Error stopping buffer check thread: {str(e)}")
 
+    # Disconnect from server management systems
     if unified_client:
         try:
             unified_client.disconnect()
+            operator_logger.info("Disconnected from server management systems")
         except Exception as e:
             operator_logger.warning(f"Error disconnecting from server management systems: {e}")
 
