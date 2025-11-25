@@ -135,7 +135,7 @@ class DellServerStrategy(ServerStrategy):
                     logger.info(f"Found matching device: {device_name}")
                     device_id = device.get("Id")
 
-                    inventory_details_url = f"{self.base_url}/DeviceService/Devices({device_id})/InventoryDetails('serverNetworkInterfaces')"
+                    inventory_details_url = f"{self.base_url}/DeviceService/Devices/{device_id}/InventoryDetails('serverNetworkInterfaces')"
                     logger.debug(f"Fetching inventory from URL: {inventory_details_url}")
                     try:
                         response = self._session.get(inventory_details_url)
