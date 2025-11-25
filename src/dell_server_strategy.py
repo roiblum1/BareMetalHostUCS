@@ -124,7 +124,7 @@ class DellServerStrategy(ServerStrategy):
             devices_response = response.json()
 
             devices = devices_response.get("value", [])
-            logger.debug(f"Retrieved {len(devices)} devices (skip={skip}, top={top})")
+            logger.info(f"Retrieved {len(devices)} devices (skip={skip}, top={top})")
 
             # Search for device in current batch
             device = next((device for device in devices if str(device.get("DeviceName")) == str(idrac_ip)), None)
@@ -134,7 +134,7 @@ class DellServerStrategy(ServerStrategy):
                 device_id = device.get("Id")
 
                 inventory_details_url = f"{self.base_url}/DeviceService/Devices({device_id})/InventoryDetails('serverNetworkInterfaces')"
-                logger.debug(f"Fetching inventory from URL: {inventory_details_url}")
+                logger.info(f"Fetching inventory from URL: {inventory_details_url}")
 
                 response = self._session.get(inventory_details_url)
                 response.raise_for_status()
@@ -146,7 +146,7 @@ class DellServerStrategy(ServerStrategy):
                 if network_interfaces:
                     try:
                         if "data" in server_name:
-                            logger.debug(f"Using 'data' server logic for {server_name}")
+                            logger.info(f"Using 'data' server logic for {server_name}")
                             last_network_interface = network_interfaces[-1]
                             last_port = last_network_interface.get("Ports", [])[-1]
                             partition = last_port.get("Partition", [])[-1]
@@ -155,14 +155,14 @@ class DellServerStrategy(ServerStrategy):
                             return mac_address
 
                         first_interface = network_interfaces[0]
-                        logger.debug(f"First interface: {first_interface}")
+                        logger.info(f"First interface: {first_interface}")
                         ports = first_interface.get("Ports", [])
-                        logger.debug(f"Ports found: {len(ports)} ports")
+                        logger.info(f"Ports found: {len(ports)} ports")
 
                         if ports:
                             first_port = ports[0]
                             partitions = first_port.get("Partition", [])
-                            logger.debug(f"Partitions found: {len(partitions)} partitions")
+                            logger.info(f"Partitions found: {len(partitions)} partitions")
 
                             if partitions:
                                 first_partition = partitions[0]
