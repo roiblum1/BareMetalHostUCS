@@ -27,25 +27,15 @@ def get_bmc_credentials(vendor: str) -> Tuple[str, str]:
     """
     vendor_upper = vendor.upper()
 
-    if vendor_upper == "HP":
-        username = os.getenv('HP_BMC_USERNAME')
-        password = os.getenv('HP_BMC_PASSWORD')
-        vendor_name = "HP"
-    elif vendor_upper == "DELL":
-        username = os.getenv('DELL_BMC_USERNAME')
-        password = os.getenv('DELL_BMC_PASSWORD')
-        vendor_name = "DELL"
-    elif vendor_upper == "CISCO":
-        username = os.getenv('CISCO_BMC_USERNAME')
-        password = os.getenv('CISCO_BMC_PASSWORD')
-        vendor_name = "CISCO"
-    else:
-        raise ValueError(f"Unknown vendor: {vendor}. Must be HP, DELL, or CISCO")
+    # Try vendor-specific credentials first, then fall back to default
+    username = os.getenv('DEFAULT_IPMI_USERNAME')
+    password = os.getenv('DEFAULT_IPMI_PASSWORD')
+    vendor_name = vendor_upper
 
     if not username or not password:
         raise ValueError(
-            f"Missing BMC credentials for {vendor_name}. "
-            f"Please set {vendor_name}_BMC_USERNAME and {vendor_name}_BMC_PASSWORD environment variables"
+            f"Missing BMC credentials. "
+            f"Please set DEFAULT_IPMI_USERNAME and DEFAULT_IPMI_PASSWORD environment variables"
         )
 
     return username, password
@@ -215,9 +205,7 @@ class YamlGenerator:
         Generate BMC Secret resource definition.
 
         Credentials are retrieved from environment variables:
-        - HP_BMC_USERNAME / HP_BMC_PASSWORD for HP servers
-        - DELL_BMC_USERNAME / DELL_BMC_PASSWORD for Dell servers
-        - CISCO_BMC_USERNAME / CISCO_BMC_PASSWORD for Cisco servers
+        - DEFAULT_IPMI_USERNAME / DEFAULT_IPMI_PASSWORD for all servers
 
         Input credentials from environment are in plain text.
         Output secret data is base64 encoded for Kubernetes.

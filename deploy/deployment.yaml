@@ -9,17 +9,6 @@ stringData:
   username: "your-oneview-username" # Replace with your HP OneView username
   password: "your-oneview-password" # Replace with your HP OneView password
 ---
-# HP iLO credentials secret (for IPMI access to HP servers)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: hp-ilo-credentials
-  namespace: metal3-system
-type: Opaque
-stringData:
-  username: "your-ilo-username" # Replace with your HP iLO username
-  password: "your-ilo-password" # Replace with your HP iLO password
----
 # UCS Central credentials secret
 apiVersion: v1
 kind: Secret
@@ -53,16 +42,16 @@ stringData:
   username: "your-ome-username" # Replace with your Dell OME username
   password: "your-ome-password" # Replace with your Dell OME password
 ---
-# Dell iDRAC credentials secret (for IPMI access to Dell servers)
+# Default IPMI credentials secret (used for all servers)
 apiVersion: v1
 kind: Secret
 metadata:
-  name: dell-idrac-credentials
+  name: default-ipmi-credentials
   namespace: metal3-system
 type: Opaque
 stringData:
-  username: "your-idrac-username" # Replace with your Dell iDRAC username
-  password: "your-idrac-password" # Replace with your Dell iDRAC password
+  username: "your-ipmi-username" # Replace with your default IPMI username
+  password: "your-ipmi-password" # Replace with your default IPMI password
 ---
 # Configuration for management system IPs
 apiVersion: v1
@@ -72,9 +61,9 @@ metadata:
   namespace: metal3-system
 data:
   # Management system IP addresses
-  HP_ONEVIEW_IP: "10.0.0.1" # Replace with your HP OneView IP address
+  ONEVIEW_IP: "10.0.0.1" # Replace with your HP OneView IP address
   UCS_CENTRAL_IP: "10.0.0.2" # Replace with your UCS Central IP address
-  DELL_OME_IP: "10.0.0.3" # Replace with your Dell OME IP address
+  OME_IP: "10.0.0.3" # Replace with your Dell OME IP address
 ---
 # Operator deployment
 apiVersion: apps/v1
@@ -103,31 +92,20 @@ spec:
           imagePullPolicy: Always
           env:
             # HP OneView configuration
-            - name: HP_ONEVIEW_IP
+            - name: ONEVIEW_IP
               valueFrom:
                 configMapKeyRef:
                   name: bmh-generator-config
-                  key: HP_ONEVIEW_IP
-            - name: HP_ONEVIEW_USERNAME
+                  key: ONEVIEW_IP
+            - name: ONEVIEW_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: hp-oneview-credentials
                   key: username
-            - name: HP_ONEVIEW_PASSWORD
+            - name: ONEVIEW_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: hp-oneview-credentials
-                  key: password
-            # HP iLO BMC credentials (for IPMI - used by Metal3 to provision servers)
-            - name: HP_BMC_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: hp-ilo-credentials
-                  key: username
-            - name: HP_BMC_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: hp-ilo-credentials
                   key: password
             # UCS Central configuration
             - name: UCS_CENTRAL_IP
@@ -157,37 +135,32 @@ spec:
                   name: ucs-manager-credentials
                   key: password
             # Dell OME configuration
-            - name: DELL_OME_IP
+            - name: OME_IP
               valueFrom:
                 configMapKeyRef:
                   name: bmh-generator-config
-                  key: DELL_OME_IP
-            - name: DELL_OME_USERNAME
+                  key: OME_IP
+            - name: OME_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: dell-ome-credentials
                   key: username
-            - name: DELL_OME_PASSWORD
+            - name: OME_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: dell-ome-credentials
                   key: password
-            # Dell iDRAC BMC credentials (for IPMI - used by Metal3 to provision servers)
-            - name: DELL_BMC_USERNAME
+            # Default IPMI credentials (used for all servers)
+            - name: DEFAULT_IPMI_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: dell-idrac-credentials
+                  name: default-ipmi-credentials
                   key: username
-            - name: DELL_BMC_PASSWORD
+            - name: DEFAULT_IPMI_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: dell-idrac-credentials
+                  name: default-ipmi-credentials
                   key: password
-            # Cisco CIMC BMC credentials (for IPMI - used by Metal3 to provision servers)
-            - name: CISCO_BMC_USERNAME
-              value: "admin"  # Default Cisco CIMC username
-            - name: CISCO_BMC_PASSWORD
-              value: "password"  # Replace with your Cisco CIMC password
             # Optional: Logging and buffer configuration
             - name: LOG_LEVEL
               value: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
