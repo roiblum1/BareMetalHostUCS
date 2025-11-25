@@ -127,54 +127,48 @@ class DellServerStrategy(ServerStrategy):
             logger.debug(f"Retrieved {len(devices)} devices (skip={skip}, top={top})")
 
             # Search for device in current batch
-            for device in devices:
-                device_name = str(device.get("DeviceName", ""))
-                logger.debug(f"Checking device: {device_name}")
+            device = next((device for device in devices if str(device.get("DeviceName")) == str(idrac_ip)), None)
 
-                if device_name == str(idrac_ip):
-                    logger.info(f"Found matching device: {device_name}")
-                    device_id = device.get("Id")
+            if device:
+                logger.info(f"Found matching device for iDRAC IP: {idrac_ip}")
+                device_id = device.get("Id")
 
-                    inventory_details_url = f"{self.base_url}/DeviceService/Devices/{device_id}/InventoryDetails('serverNetworkInterfaces')"
-                    logger.debug(f"Fetching inventory from URL: {inventory_details_url}")
+                inventory_details_url = f"{self.base_url}/DeviceService/Devices({device_id})/InventoryDetails('serverNetworkInterfaces')"
+                logger.debug(f"Fetching inventory from URL: {inventory_details_url}")
+
+                response = self._session.get(inventory_details_url)
+                response.raise_for_status()
+                inventory_details_response = response.json()
+
+                network_interfaces = inventory_details_response.get("InventoryInfo", [])
+                logger.info(f"Network interfaces found: {len(network_interfaces)} for device {device_id}")
+
+                if network_interfaces:
                     try:
-                        response = self._session.get(inventory_details_url)
-                        response.raise_for_status()
-                        inventory_details_response = response.json()
+                        if "data" in server_name:
+                            last_network_interface = network_interfaces[-1]
+                            last_port = last_network_interface.get("Ports", [])[-1]
+                            partition = last_port.get("Partition", [])[-1]
+                            mac_address = partition.get("CurrentMacAddress")
+                            logger.info(f"MAC address found for server {server_name}: {mac_address}")
+                            return mac_address
 
-                        logger.debug(f"Inventory response keys: {inventory_details_response.keys()}")
-                        logger.debug(f"Full inventory response: {inventory_details_response}")
-                        network_interfaces = inventory_details_response.get("InventoryInfo", [])
-                        logger.info(f"Network interfaces found: {len(network_interfaces)} interfaces for device {device_id}")
-
-                        if not network_interfaces:
-                            logger.error(f"No network interfaces in InventoryInfo for device {device_id}. Full response: {inventory_details_response}")
-                            return None
-
-                        if network_interfaces:
-                            if "data" in server_name.lower():
-                                last_network_interface = network_interfaces[-1]
-                                last_port = last_network_interface.get("Ports", [])[-1]
-                                partition = last_port.get("Partition", [])[-1]
-                                mac_address = partition.get("CurrentMacAddress")
+                        first_interface = network_interfaces[0]
+                        ports = first_interface.get("Ports", [])
+                        if ports:
+                            first_port = ports[0]
+                            partitions = first_port.get("Partition", [])
+                            if partitions:
+                                first_partition = partitions[0]
+                                mac_address = first_partition.get("CurrentMacAddress")
                                 logger.info(f"MAC address found for server {server_name}: {mac_address}")
                                 return mac_address
-                            first_interface = network_interfaces[0]
-                            ports = first_interface.get("Ports", [])
-                            if ports:
-                                first_port = ports[0]
-                                partitions = first_port.get("Partition", [])
-                                if partitions:
-                                    first_partition = partitions[0]
-                                    mac_address = first_partition.get("CurrentMacAddress")
-                                    logger.info(f"MAC address found for server {server_name}: {mac_address}")
-                                    return mac_address
-
-                        logger.error(f"No network interfaces or MAC address found for device {device_id}")
-                        return None
                     except Exception as e:
-                        logger.error(f"Failed to retrieve inventory details for device {device_id}: {e}")
+                        logger.error(f"Failed to extract MAC from inventory for device {device_id}: {e}")
                         return None
+
+                logger.error(f"No network interfaces found for device {device_id}")
+                return None
 
             # Check if we've reached the end of pagination
             if len(devices) < top:
@@ -185,7 +179,6 @@ class DellServerStrategy(ServerStrategy):
             logger.debug(f"No match found in this batch, fetching next {top} devices...")
 
         return None 
-    
     def clear_cache(self):
         """Clear any cached data."""
         self._cache = None
