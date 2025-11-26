@@ -15,10 +15,10 @@ from ucscsdk.ucschandle import UcscHandle
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.buffer_manager import BufferManager
-from src.openshift_utils import OpenShiftUtils
-from src.yaml_generators import YamlGenerator
-from src.unified_server_client import UnifiedServerClient, initialize_unified_client
+from buffer_manager import BufferManager
+from openshift_utils import OpenShiftUtils
+from yaml_generators import YamlGenerator
+from unified_server_client import UnifiedServerClient, initialize_unified_client
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -122,7 +122,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         "phase": "Processing",
         "message": f"Looking up server {server_name} management systems."
     }
-    OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", target_namespace, "baremetalhostgenerators", name, status_update)
+    OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, status_update)
     try:
         operator_logger.info(f"Searching for server info: {server_name}")
         mac_address, ip_address = unified_client.get_server_info(server_name, server_vendor)
@@ -187,9 +187,9 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             "vlanId": vlan_id
         }
         
-        OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", target_namespace, "baremetalhostgenerators", name, status_update)
+        OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, status_update)
         operator_logger.info(f"Successfully completed BareMetalHost creation for: {server_name}")
-        
+
     except Exception as e:
         operator_logger.error(f"Error processing BareMetalHostGenerator {name}: {e}")
         status_update = {
@@ -204,7 +204,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         if 'server_vendor' in locals() and server_vendor:
             status_update["serverVendor"] = server_vendor
 
-        OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", target_namespace, "baremetalhostgenerators", name, status_update)
+        OpenShiftUtils.update_bmh_status(custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, status_update)
         raise kopf.PermanentError(f"Failed to create BareMetalHost for {server_name}: {e}")
     
 @kopf.on.update('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')

@@ -267,6 +267,19 @@ class YamlGenerator:
         """Generate NMStateConfig resource definition"""
         self.bmh_logger.info(f"Generating NMStateConfig for {name} in namespace {namespace}")
         self.bmh_logger.info(f"MacAddress: {macAddress}")
+
+        # Validate VLAN ID
+        if not vlan_id or vlan_id == "None" or str(vlan_id).strip() == "":
+            raise ValueError(f"VLAN ID is required for NMStateConfig but got: {vlan_id}")
+
+        # Validate VLAN ID is numeric
+        try:
+            vlan_id_int = int(vlan_id)
+            if vlan_id_int < 1 or vlan_id_int > 4094:
+                raise ValueError(f"VLAN ID must be between 1 and 4094, got: {vlan_id}")
+        except ValueError as e:
+            raise ValueError(f"VLAN ID must be a valid integer, got: {vlan_id}") from e
+
         if "data" in name:
             interface_name = "ens2f0np0"
         else:

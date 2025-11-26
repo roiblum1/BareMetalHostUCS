@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import os
-import threading
 from datetime import datetime
 from typing import Any, Dict, List
 import kubernetes
@@ -16,8 +15,8 @@ class BufferManager:
     def __init__(self, custom_api: client.CustomObjectsApi = None, core_v1: client.CoreV1Api = None):
         self.custom_api = custom_api or client.CustomObjectsApi()
         self.core_v1 = core_v1 or client.CoreV1Api()
-        # Use threading.Lock instead of asyncio.Lock for cross-thread safety
-        self.bmh_buffer_lock = threading.Lock()
+        # Use asyncio.Lock for async/await compatibility
+        self.bmh_buffer_lock = asyncio.Lock()
         self.buffer_logger = buffer_logger
         self.MAX_AVAILABLE_SERVERS = MAX_AVAILABLE_SERVERS
         self.BUFFER_CHECK_INTERVAL = BUFFER_CHECK_INTERVAL 
@@ -267,8 +266,8 @@ class BufferManager:
         while True:
             try:
                 await asyncio.sleep(self.BUFFER_CHECK_INTERVAL)
-                # Use regular 'with' for threading.Lock (not 'async with')
-                with self.bmh_buffer_lock:
+                # Use async with for asyncio.Lock
+                async with self.bmh_buffer_lock:
                     self.buffer_logger.info("Running buffer check")
 
                     available_bmhs = await self.get_available_baremetal_hosts()
@@ -299,9 +298,9 @@ class BufferManager:
         """
         Check if server should be buffered or created immediately.
 
-        Thread-safe: Uses threading.Lock to coordinate with background buffer thread.
+        Thread-safe: Uses asyncio.Lock to coordinate with background buffer task.
         """
-        with self.bmh_buffer_lock:
+        async with self.bmh_buffer_lock:
             available_bmhs = await self.get_available_baremetal_hosts()
             available_count = len(available_bmhs)
 

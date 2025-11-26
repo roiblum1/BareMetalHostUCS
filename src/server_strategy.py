@@ -88,7 +88,7 @@ class ServerStrategyFactory:
     def _init_strategies(cls):
         """Lazy initialization of strategies to avoid circular imports"""
         if not cls._strategies:
-            from hp_server_stategy import HPServerStrategy
+            from hp_server_strategy import HPServerStrategy
             from dell_server_strategy import DellServerStrategy
             from ucs_server_strategy import CiscoServerStrategy
 
