@@ -84,6 +84,14 @@ spec:
     - name: BMH
       type: string
       jsonPath: .status.bmhName
+    - name: BMC
+      type: string
+      jsonPath: .status.ipmiAddress
+      description: "BMC/IPMI address of the server"
+    - name: MAC
+      type: string
+      jsonPath: .status.macAddress
+      description: "MAC address of the server"
     - name: Message
       type: string
       jsonPath: .status.message

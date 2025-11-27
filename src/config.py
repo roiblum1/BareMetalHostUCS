@@ -41,11 +41,18 @@ def setup_logging():
 # Initialize logging on module import
 setup_logging()
 
-# Create specialized loggers
+# Create specialized loggers and set their levels
 bmh_logger = logging.getLogger('bmh_generator')
+bmh_logger.setLevel(get_log_level())
+
 ucs_logger = logging.getLogger('ucs_client')
+ucs_logger.setLevel(get_log_level())
+
 operator_logger = logging.getLogger('k8s_operator')
+operator_logger.setLevel(get_log_level())
+
 buffer_logger = logging.getLogger('bmh_buffer')
+buffer_logger.setLevel(get_log_level())
 
 
 # ============================================================================

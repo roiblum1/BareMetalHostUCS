@@ -7,8 +7,8 @@ logger = operator_logger
 class OpenShiftUtils:
     @staticmethod
     def update_bmh_status(custom_api: client.CustomObjectsApi, group: str, version: str, namespace: str, plural: str, name: str, status_update: dict) -> None:
-        """Update the status of a BareMetalHost custom resource in OpenShift."""
-        logger.debug(f"Updating BareMetalHost status for {name} in namespace {namespace} with {status_update}")
+        """Update the status of a BareMetalHost Generator custom resource."""
+        logger.debug(f"Updating {plural} status for {name} in namespace {namespace} with {status_update}")
         try:
             custom_api.patch_namespaced_custom_object_status(
                 group=group,
@@ -16,11 +16,12 @@ class OpenShiftUtils:
                 namespace=namespace,
                 plural=plural,
                 name=name,
-                body={"status": status_update}
+                body={"status": status_update},
+                _content_type="application/merge-patch+json"
             )
-            logger.info(f"Successfully updated BareMetalHost status for {name}")
+            logger.info(f"Successfully updated {plural} status for {name} with fields: {list(status_update.keys())}")
         except client.exceptions.ApiException as e:
-            logger.error(f"Failed to update BareMetalHost status for {name}: {e}")
+            logger.error(f"Failed to update {plural} status for {name}: {e}")
             raise
 
     @staticmethod
