@@ -31,19 +31,6 @@ spec:
                 additionalProperties:
                   type: string
                 description: "Additional labels to apply to the BareMetalHost"
-          metadata:
-            type: object
-            properties:
-              annotations:
-                type: object
-                additionalProperties:
-                  type: string
-                description: "Annotations for the resource"
-                properties:
-                  server_vendor:
-                    type: string
-                    enum: ["HP", "Dell", "Cisco"]
-                    description: "Server vendor type - must be HP, Dell, or Cisco"
           status:
             type: object
             properties:
