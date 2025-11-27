@@ -13,7 +13,7 @@ from buffer_manager import BufferManager
 from openshift_utils import OpenShiftUtils
 from yaml_generators import YamlGenerator
 from unified_server_client import UnifiedServerClient, initialize_unified_client
-from config import operator_logger, buffer_logger
+from config import operator_logger, buffer_logger, BUFFER_CHECK_INTERVAL
 
 # Initialize YAML generator
 yaml_generator = YamlGenerator()
@@ -36,6 +36,9 @@ operator_logger.info("Kubernetes client initialized.")
 # Initialize buffer manager and unified client (will be set in startup)
 buffer_manager = BufferManager(custom_api, core_api)
 unified_client: Optional[UnifiedServerClient] = None
+
+# Background task for buffer checking (created in startup)
+_buffer_check_task: Optional[asyncio.Task] = None
 
 # Disable SSL warnings
 disable_warnings(InsecureRequestWarning)
@@ -93,53 +96,51 @@ async def configure(settings: kopf.OperatorSettings, **_):
 
     operator_logger.info("Operator configuration completed successfully.")
 
+    # Create background task for buffer checking
+    global _buffer_check_task
+    _buffer_check_task = asyncio.create_task(_buffer_check_loop(), name="buffer-check-loop")
+    operator_logger.info("Started background buffer check task")
 
-@kopf.daemon(
-    'infra.example.com', 'v1alpha1', 'baremetalhostgenerators',
-    initial_delay=10,
-    cancellation_timeout=10,
-)
-async def buffer_check_daemon(stopped: kopf.DaemonStopped, **kwargs):
+
+async def _buffer_check_loop():
     """
-    Background daemon for releasing buffered generators.
+    Background task that periodically checks for buffered servers to release.
 
-    This runs in kopf's event loop, making asyncio.Lock safe to use.
-    The daemon checks every BUFFER_CHECK_INTERVAL seconds for buffered
-    generators that can be released when slots become available.
+    This runs as a single global task created in startup, ensuring:
+    - Only ONE task runs regardless of number of resources
+    - asyncio.Lock works correctly (created in same event loop)
+    - Graceful cancellation on operator shutdown
     """
-    buffer_logger.info("Buffer check daemon started")
+    buffer_logger.info("Buffer check loop starting, waiting 10 seconds before first check...")
+    await asyncio.sleep(10)
 
-    try:
-        while not stopped:
-            try:
-                # Wait for interval or stop signal
-                await asyncio.wait_for(
-                    stopped.wait(),
-                    timeout=buffer_manager.BUFFER_CHECK_INTERVAL
-                )
-                # If we get here, stopped was set
-                break
-            except asyncio.TimeoutError:
-                # Normal timeout - time to check buffer
-                pass
+    while True:
+        try:
+            # Skip if unified client not initialized yet
+            if unified_client is None:
+                buffer_logger.warning("Unified client not initialized, skipping buffer check")
+                await asyncio.sleep(BUFFER_CHECK_INTERVAL)
+                continue
 
-            # Run buffer check iteration
-            try:
-                stats = await buffer_manager.buffer_check_iteration(unified_client, yaml_generator)
-                buffer_logger.info(
-                    f"Buffer check completed: "
-                    f"available={stats['available_count']}, "
-                    f"buffered={stats['buffered_count']}, "
-                    f"released={stats['released_count']}, "
-                    f"failed={stats['failed_count']}"
-                )
-            except Exception as e:
-                buffer_logger.error(f"Error in buffer check iteration: {e}")
-                # Continue running despite errors
-                await asyncio.sleep(5)
+            # Perform buffer check iteration
+            stats = await buffer_manager.buffer_check_iteration(unified_client, yaml_generator)
+            buffer_logger.info(
+                f"Buffer check completed: "
+                f"available={stats['available_count']}, "
+                f"buffered={stats['buffered_count']}, "
+                f"released={stats['released_count']}, "
+                f"failed={stats['failed_count']}"
+            )
 
-    finally:
-        buffer_logger.info("Buffer check daemon stopped")
+        except asyncio.CancelledError:
+            buffer_logger.info("Buffer check loop cancelled, exiting gracefully")
+            raise  # Re-raise to properly exit the task
+        except Exception as e:
+            buffer_logger.error(f"Error in buffer check iteration: {e}", exc_info=True)
+            # Continue loop on errors - don't crash the background task
+
+        # Wait before next iteration
+        await asyncio.sleep(BUFFER_CHECK_INTERVAL)
 
 
 @kopf.on.create('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
@@ -338,7 +339,7 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
                 )
 
             # Delete BMC Secret
-            bmc_secret_name = f"{str(server_vendor).lower()}-cred-{bmh_name}"
+            bmc_secret_name = f"{server_vendor.lower()}-cred-{bmh_name}" if server_vendor else f"bmc-cred-{bmh_name}"
             OpenShiftUtils.delete_bmc_secret(core_api, bmh_namespace, bmc_secret_name)
             operator_logger.info(
                 f"Deleted BMC Secret: {bmc_secret_name} in namespace: {bmh_namespace}"
@@ -363,10 +364,21 @@ async def cleanup_fn(**kwargs):
     Cleanup function called on operator shutdown.
 
     This handler:
+    - Cancels background buffer check task
     - Requests shutdown of buffer manager
     - Disconnects from server management systems
     """
     operator_logger.info("Operator shutting down, cleaning up resources")
+
+    # Cancel background buffer check task
+    global _buffer_check_task
+    if _buffer_check_task and not _buffer_check_task.done():
+        operator_logger.info("Cancelling buffer check task...")
+        _buffer_check_task.cancel()
+        try:
+            await _buffer_check_task
+        except asyncio.CancelledError:
+            operator_logger.info("Buffer check task cancelled successfully")
 
     # Request buffer manager shutdown
     buffer_manager.request_shutdown()

@@ -55,7 +55,13 @@ class OpenShiftUtils:
                 raise
 
     @staticmethod
-    def delete_nmstate_config(custom_api: client.CustomObjectsApi, target_namespace: str, server_name: str) -> None:
+    def delete_nmstate_config(custom_api: client.CustomObjectsApi, target_namespace: str, server_name: str) -> bool:
+        """
+        Delete NMStateConfig resource.
+
+        Returns:
+            True if deleted, False if not found (404 is not an error)
+        """
         logger.debug(f"Deleting NMStateConfig nmstate-config-{server_name} from namespace {target_namespace}")
         try:
             custom_api.delete_namespaced_custom_object(
@@ -66,12 +72,14 @@ class OpenShiftUtils:
                 name=f"nmstate-config-{server_name}"
                 )
             logger.info(f"Successfully deleted NMStateConfig nmstate-config-{server_name}")
+            return True
         except client.ApiException as e:
             if e.status == 404:
-                logger.warning(f"NMStateConfig nmstate-config-{server_name} not found for deletion: {e}")
+                logger.info(f"NMStateConfig nmstate-config-{server_name} not found for deletion, already deleted")
+                return False  # Not an error - idempotent behavior
             else:
                 logger.error(f"Failed to delete NMStateConfig nmstate-config-{server_name}: {e}")
-            raise
+                raise
 
     @staticmethod
     def create_bmc_secret(core_v1: client.CoreV1Api, target_namespace: str, bmc_secret: dict, server_name: str) -> bool:
@@ -98,7 +106,13 @@ class OpenShiftUtils:
                 raise
 
     @staticmethod
-    def delete_bmc_secret(core_v1: client.CoreV1Api, target_namespace: str, secret_name: str) -> None:
+    def delete_bmc_secret(core_v1: client.CoreV1Api, target_namespace: str, secret_name: str) -> bool:
+        """
+        Delete BMC Secret.
+
+        Returns:
+            True if deleted, False if not found (404 is not an error)
+        """
         logger.debug(f"Deleting BMC Secret {secret_name} from namespace {target_namespace}")
         try:
             core_v1.delete_namespaced_secret(
@@ -106,12 +120,14 @@ class OpenShiftUtils:
                 namespace=target_namespace
             )
             logger.info(f"Successfully deleted BMC Secret {secret_name}")
+            return True
         except client.ApiException as e:
             if e.status == 404:
-                logger.warning(f"BMC Secret {secret_name} not found for deletion: {e}")
+                logger.info(f"BMC Secret {secret_name} not found for deletion, already deleted")
+                return False  # Not an error - idempotent behavior
             else:
                 logger.error(f"Failed to delete BMC Secret {secret_name}: {e}")
-            raise
+                raise
 
     @staticmethod
     def create_baremetalhost(custom_api: client.CustomObjectsApi, target_namespace: str, bmh: dict, server_name: str) -> bool:
@@ -141,7 +157,13 @@ class OpenShiftUtils:
                 raise
 
     @staticmethod
-    def delete_baremetalhost(custom_api: client.CustomObjectsApi, target_namespace: str, bmh_name: str) -> None:
+    def delete_baremetalhost(custom_api: client.CustomObjectsApi, target_namespace: str, bmh_name: str) -> bool:
+        """
+        Delete BareMetalHost resource.
+
+        Returns:
+            True if deleted, False if not found (404 is not an error)
+        """
         logger.debug(f"Deleting BareMetalHost {bmh_name} from namespace {target_namespace}")
         try:
             custom_api.delete_namespaced_custom_object(
@@ -152,9 +174,11 @@ class OpenShiftUtils:
                 name=bmh_name
             )
             logger.info(f"Successfully deleted BareMetalHost {bmh_name}")
+            return True
         except client.ApiException as e:
             if e.status == 404:
-                logger.warning(f"BareMetalHost {bmh_name} not found for deletion: {e}")
+                logger.info(f"BareMetalHost {bmh_name} not found for deletion, already deleted")
+                return False  # Not an error - idempotent behavior
             else:
                 logger.error(f"Failed to delete BareMetalHost {bmh_name}: {e}")
-            raise
+                raise
