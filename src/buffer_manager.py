@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional
 import kubernetes
 from kubernetes import client
 
-from yaml_generators import YamlGenerator
-from openshift_utils import OpenShiftUtils
-from unified_server_client import UnifiedServerClient
-from config import buffer_logger, MAX_AVAILABLE_SERVERS, BUFFER_CHECK_INTERVAL
+from src.yaml_generators import YamlGenerator
+from src.openshift_utils import OpenShiftUtils
+from src.unified_server_client import UnifiedServerClient
+from src.config import buffer_logger, MAX_AVAILABLE_SERVERS, BUFFER_CHECK_INTERVAL
 
 class BufferManager:
     def __init__(self, custom_api: client.CustomObjectsApi = None, core_v1: client.CoreV1Api = None):
@@ -186,7 +186,7 @@ class BufferManager:
                 server_vendor = annotations.get('server_vendor')
                 if not server_vendor:
                     # Fallback to default detection logic
-                    from server_strategy import ServerTypeDetector
+                    from src.server_strategy import ServerTypeDetector
                     detected_type = ServerTypeDetector.detect(name)
                     server_vendor = detected_type.value.upper()
 
@@ -295,7 +295,7 @@ class BufferManager:
                     namespace=target_namespace,
                     macAddress=mac_address,
                     infra_env=infra_env,
-                    vlan_id=vlan_id
+                    vlanId=vlan_id
                 )
                 OpenShiftUtils.create_nmstate_config(self.custom_api, target_namespace, nmstate_config, server_name)
 

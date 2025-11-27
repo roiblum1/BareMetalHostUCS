@@ -6,7 +6,7 @@ from typing import Optional, Tuple, Dict, Type
 import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
-from server_strategy import ServerStrategy
+from src.server_strategy import ServerStrategy
 
 disable_warnings(InsecureRequestWarning)
 logger = logging.getLogger('dell_strategy')
@@ -103,7 +103,8 @@ class DellServerStrategy(ServerStrategy):
 
             # Check if we've reached the end of pagination
             if len(dell_servers) < top:
-                logger.error(f"Server profile '{server_name}' not found in Dell OME after checking {skip + len(dell_servers)} profiles")
+                total_checked = skip + len(dell_servers)
+                logger.error(f"Server profile '{server_name}' not found in Dell OME after checking {total_checked} profiles. ")
                 return None, None
 
             skip += top

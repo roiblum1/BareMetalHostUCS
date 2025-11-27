@@ -6,7 +6,7 @@ from typing import Optional, Tuple, Dict, Type
 import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
-from server_strategy import ServerStrategy
+from src.server_strategy import ServerStrategy
 
 disable_warnings(InsecureRequestWarning)
 logger = logging.getLogger('cisco_strategy')
@@ -99,8 +99,8 @@ class CiscoServerStrategy(ServerStrategy):
                     if ucsm_handle:
                         try:
                             ucsm_handle.logout()
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Error during UCS Manager logout: {e}")
         return None, None
         
     def _extract_ucs_management_ip(self, ucsm_handle, server_details) -> Optional[str]:

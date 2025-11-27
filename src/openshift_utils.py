@@ -1,6 +1,6 @@
 import logging
 from kubernetes import client, config
-from config import operator_logger
+from src.config import operator_logger
 
 logger = operator_logger
 

@@ -5,7 +5,7 @@ from typing import Optional, Tuple, Dict, Type
 import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
-from config import operator_logger
+from src.config import operator_logger
 
 disable_warnings(InsecureRequestWarning)
 logger = operator_logger
@@ -88,9 +88,9 @@ class ServerStrategyFactory:
     def _init_strategies(cls):
         """Lazy initialization of strategies to avoid circular imports"""
         if not cls._strategies:
-            from hp_server_strategy import HPServerStrategy
-            from dell_server_strategy import DellServerStrategy
-            from ucs_server_strategy import CiscoServerStrategy
+            from src.hp_server_strategy import HPServerStrategy
+            from src.dell_server_strategy import DellServerStrategy
+            from src.ucs_server_strategy import CiscoServerStrategy
 
             cls._strategies = {
                 ServerType.HP: HPServerStrategy,

@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple, Dict
 import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
-from server_strategy import ServerType, ServerTypeDetector, ServerStrategy, ServerStrategyFactory 
+from src.server_strategy import ServerType, ServerTypeDetector, ServerStrategy, ServerStrategyFactory 
 # Disable SSL warnings
 disable_warnings(InsecureRequestWarning)
 

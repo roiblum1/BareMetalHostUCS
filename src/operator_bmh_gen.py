@@ -9,11 +9,11 @@ from kubernetes import client, config
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 
-from buffer_manager import BufferManager
-from openshift_utils import OpenShiftUtils
-from yaml_generators import YamlGenerator
-from unified_server_client import UnifiedServerClient, initialize_unified_client
-from config import operator_logger, buffer_logger, BUFFER_CHECK_INTERVAL
+from src.buffer_manager import BufferManager
+from src.openshift_utils import OpenShiftUtils
+from src.yaml_generators import YamlGenerator
+from src.unified_server_client import UnifiedServerClient, initialize_unified_client
+from src.config import operator_logger, buffer_logger, BUFFER_CHECK_INTERVAL
 
 # Initialize YAML generator
 yaml_generator = YamlGenerator()
@@ -260,7 +260,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
                     namespace=target_namespace,
                     macAddress=mac_address,
                     infra_env=infra_env,
-                    vlan_id=vlan_id
+                    vlanId=vlan_id
                 )
                 OpenShiftUtils.create_nmstate_config(custom_api, target_namespace, nmstate_config, server_name)
 
@@ -285,7 +285,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     except Exception as e:
         operator_logger.error(f"Error processing BareMetalHostGenerator {name}: {e}")
         status_update = {
-            "phase": "Error",
+            "phase": "Failed",
             "message": str(e)
         }
         # Preserve MAC/IP if they were retrieved before error

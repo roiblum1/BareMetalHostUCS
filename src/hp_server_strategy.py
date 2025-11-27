@@ -6,7 +6,7 @@ from typing import Optional, Tuple, Dict, Type
 import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
-from server_strategy import ServerStrategy
+from src.server_strategy import ServerStrategy
 
 disable_warnings(InsecureRequestWarning)
 logger = logging.getLogger('hp_strategy')
@@ -90,6 +90,9 @@ class HPServerStrategy(ServerStrategy):
             if (server_name and server_name_attr and server_name.upper() == server_name_attr.upper()) or \
                (server_name and server_serial_number and server_name.upper() == server_serial_number.upper()):
                 server_hardware_uri  = server.get("serverHardwareUri")
+                if not server_hardware_uri:
+                    logger.warning(f"Server {server_name} has no serverHardwareUri, skipping")
+                    continue
                 if not server_hardware_uri.startswith(self.base_url):
                     server_hardware_uri = f"{self.base_url}{server_hardware_uri}"
                 try:

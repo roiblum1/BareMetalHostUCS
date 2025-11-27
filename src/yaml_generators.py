@@ -3,9 +3,9 @@ import ipaddress
 import os
 import re
 from typing import Any, Dict, Optional, Tuple
-from server_strategy import ServerType
+from src.server_strategy import ServerType
 import yaml
-from config import bmh_logger
+from src.config import bmh_logger
 
 
 # ============================================================================
@@ -263,22 +263,22 @@ class YamlGenerator:
         self.bmh_logger.info(f"Successfully generated BMC secret definition for {secret_name}")
         return secret_data
     
-    def generate_nmstate_config(self, name: str, namespace: str, macAddress: str, infra_env: str, vlan_id: str) -> Dict[str, Any]:
+    def generate_nmstate_config(self, name: str, namespace: str, macAddress: str, infra_env: str, vlanId: str) -> Dict[str, Any]:
         """Generate NMStateConfig resource definition"""
         self.bmh_logger.info(f"Generating NMStateConfig for {name} in namespace {namespace}")
         self.bmh_logger.info(f"MacAddress: {macAddress}")
 
         # Validate VLAN ID
-        if not vlan_id or vlan_id == "None" or str(vlan_id).strip() == "":
-            raise ValueError(f"VLAN ID is required for NMStateConfig but got: {vlan_id}")
+        if not vlanId or vlanId == "None" or str(vlanId).strip() == "":
+            raise ValueError(f"VLAN ID is required for NMStateConfig but got: {vlanId}")
 
         # Validate VLAN ID is numeric and convert to integer
         try:
-            vlan_id_int = int(vlan_id)
+            vlan_id_int = int(vlanId)
             if vlan_id_int < 1 or vlan_id_int > 4094:
-                raise ValueError(f"VLAN ID must be between 1 and 4094, got: {vlan_id}")
+                raise ValueError(f"VLAN ID must be between 1 and 4094, got: {vlanId}")
         except ValueError as e:
-            raise ValueError(f"VLAN ID must be a valid integer, got: {vlan_id}") from e
+            raise ValueError(f"VLAN ID must be a valid integer, got: {vlanId}") from e
 
         if "data" in name:
             interface_name = "ens2f0np0"

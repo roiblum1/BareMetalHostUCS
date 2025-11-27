@@ -68,25 +68,15 @@ spec:
         - name: ONEVIEW_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.hpOneViewPassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: ONEVIEW_PASSWORD
-              {{- end }}
         - name: HP_BMC_USERNAME
           value: {{ .Values.hpOneView.bmc.username | quote }}
         - name: HP_BMC_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.hpBmcPassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: HP_BMC_PASSWORD
-              {{- end }}
         {{- end }}
 
         {{- if .Values.ciscoUCS.enabled }}
@@ -98,37 +88,22 @@ spec:
         - name: UCS_CENTRAL_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.ucsCentralPassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: UCS_CENTRAL_PASSWORD
-              {{- end }}
         - name: UCS_MANAGER_USERNAME
           value: {{ .Values.ciscoUCS.manager.username | quote }}
         - name: UCS_MANAGER_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.ucsManagerPassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: UCS_MANAGER_PASSWORD
-              {{- end }}
         - name: CISCO_BMC_USERNAME
           value: {{ .Values.ciscoUCS.bmc.username | quote }}
         - name: CISCO_BMC_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.ciscoBmcPassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: CISCO_BMC_PASSWORD
-              {{- end }}
         {{- end }}
 
         {{- if .Values.dellOME.enabled }}
@@ -140,25 +115,15 @@ spec:
         - name: OME_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.dellOmePassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: OME_PASSWORD
-              {{- end }}
         - name: DELL_BMC_USERNAME
           value: {{ .Values.dellOME.bmc.username | quote }}
         - name: DELL_BMC_PASSWORD
           valueFrom:
             secretKeyRef:
-              {{- if .Values.existingSecret.enabled }}
-              name: {{ .Values.existingSecret.name }}
-              key: {{ .Values.existingSecret.keys.dellBmcPassword }}
-              {{- else }}
               name: {{ include "bmh-generator-operator.fullname" . }}-credentials
               key: DELL_BMC_PASSWORD
-              {{- end }}
         {{- end }}
 
         {{- with .Values.extraEnv }}
