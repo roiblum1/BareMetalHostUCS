@@ -2,7 +2,7 @@ import asyncio
 import base64
 import os
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import kubernetes
 from kubernetes import client
 
@@ -15,30 +15,77 @@ class BufferManager:
     def __init__(self, custom_api: client.CustomObjectsApi = None, core_v1: client.CoreV1Api = None):
         self.custom_api = custom_api or client.CustomObjectsApi()
         self.core_v1 = core_v1 or client.CoreV1Api()
-        # Use asyncio.Lock for async/await compatibility
-        self.bmh_buffer_lock = asyncio.Lock()
+
+        # Lazy initialization - locks must be created in the event loop that will use them
+        self._lock: Optional[asyncio.Lock] = None
+        self._shutdown_event: Optional[asyncio.Event] = None
+
         self.buffer_logger = buffer_logger
         self.MAX_AVAILABLE_SERVERS = MAX_AVAILABLE_SERVERS
-        self.BUFFER_CHECK_INTERVAL = BUFFER_CHECK_INTERVAL 
-    
+        self.BUFFER_CHECK_INTERVAL = BUFFER_CHECK_INTERVAL
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Lazy initialization ensures lock is created in correct event loop"""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    @property
+    def shutdown_event(self) -> asyncio.Event:
+        """Lazy initialization ensures event is created in correct event loop"""
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        return self._shutdown_event
+
+    def request_shutdown(self):
+        """Request graceful shutdown of buffer check loop"""
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
+            self.buffer_logger.info("Shutdown requested for buffer manager")
+
     async def get_available_baremetal_hosts(self) -> List[Dict[str, Any]]:
+        """
+        Query for available BareMetalHosts using run_in_executor for non-blocking I/O.
+
+        A BareMetalHost is considered available if:
+        - provisioning.state is empty, "provisioning", or "registering"
+        - operationalStatus is not "detached"
+        - provisioning.consumer is not set
+        """
         self.buffer_logger.debug("Querying for available BareMetalHosts")
         try:
-            bmhs = self.custom_api.list_cluster_custom_object(
-                group="metal3.io",
-                version="v1alpha1",
-                plural="baremetalhosts"
+            # Use run_in_executor to prevent blocking the event loop
+            loop = asyncio.get_event_loop()
+            bmhs = await loop.run_in_executor(
+                None,
+                lambda: self.custom_api.list_cluster_custom_object(
+                    group="metal3.io",
+                    version="v1alpha1",
+                    plural="baremetalhosts"
+                )
             )
+
             available_bmhs = []
             for bmh in bmhs.get("items", []):
                 status = bmh.get("status", {})
-                provisioning_state = status.get("provisioning", {}).get("state", "") 
+                provisioning_state = status.get("provisioning", {}).get("state", "")
                 operational_status = status.get("operationalStatus", "")
-                if (provisioning_state in ["", "provisioning", "registering"] and operational_status != "detached" and not status.get("provisioning", {}).get("consumer")):
+
+                if (provisioning_state in ["", "provisioning", "registering"] and
+                    operational_status != "detached" and
+                    not status.get("provisioning", {}).get("consumer")):
                     available_bmhs.append(bmh)
-                    self.buffer_logger.debug(f"BMH {bmh['metadata']['name']} is available (state: {provisioning_state}, operationalStatus: {operational_status})")
+                    self.buffer_logger.debug(
+                        f"BMH {bmh['metadata']['name']} is available "
+                        f"(state: {provisioning_state}, operationalStatus: {operational_status})"
+                    )
                 else:
-                    self.buffer_logger.debug(f"BMH {bmh['metadata']['name']} is not available (state: {provisioning_state}, operationalStatus: {operational_status})")  
+                    self.buffer_logger.debug(
+                        f"BMH {bmh['metadata']['name']} is not available "
+                        f"(state: {provisioning_state}, operationalStatus: {operational_status})"
+                    )
+
             self.buffer_logger.info(f"Found {len(available_bmhs)} available BareMetalHosts")
             return available_bmhs
         except Exception as e:
@@ -47,22 +94,36 @@ class BufferManager:
                 self.buffer_logger.error("BareMetalHost CRD not found. Ensure that the Metal3 operator is installed.")
                 return []
             raise
-    
+
     async def get_buffered_generators(self) -> List[Dict[str, Any]]:
+        """
+        Query for buffered BareMetalHostGenerators using run_in_executor.
+
+        Returns generators in "Buffered" phase, sorted by bufferedAt timestamp (FIFO).
+        """
         self.buffer_logger.debug("Querying for buffered Generators")
         try:
-            bmhgens = self.custom_api.list_cluster_custom_object(
-                group="infra.example.com",
-                version="v1alpha1",
-                plural="baremetalhostgenerators"
+            # Use run_in_executor to prevent blocking the event loop
+            loop = asyncio.get_event_loop()
+            bmhgens = await loop.run_in_executor(
+                None,
+                lambda: self.custom_api.list_cluster_custom_object(
+                    group="infra.example.com",
+                    version="v1alpha1",
+                    plural="baremetalhostgenerators"
+                )
             )
+
             buffered = []
-            
             for bmhgen in bmhgens.get("items", []):
                 status = bmhgen.get("status", {})
                 if status.get("phase") == "Buffered":
                     buffered.append(bmhgen)
                     self.buffer_logger.debug(f"Generator {bmhgen['metadata']['name']} is buffered")
+
+            # Sort by bufferedAt timestamp (FIFO)
+            buffered.sort(key=lambda x: x.get('status', {}).get('bufferedAt', ''))
+
             self.buffer_logger.info(f"Found {len(buffered)} buffered Generators")
             return buffered
         except Exception as e:
@@ -71,19 +132,46 @@ class BufferManager:
                 self.buffer_logger.error("BareMetalHostGenerator CRD not found. Ensure that the custom operator is installed.")
                 return []
             raise
-    
-    async def process_buffered_generator(self, bmhgen: Dict[str, Any], unified_client: UnifiedServerClient, yaml_generator: YamlGenerator) -> None:
+
+    async def _verify_still_buffered(self, namespace: str, name: str) -> bool:
+        """
+        Verify generator is still in Buffered phase before processing.
+
+        Prevents race conditions where another process updated the status.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            current_gen = await loop.run_in_executor(
+                None,
+                lambda: self.custom_api.get_namespaced_custom_object(
+                    group="infra.example.com",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="baremetalhostgenerators",
+                    name=name
+                )
+            )
+            current_phase = current_gen.get('status', {}).get('phase')
+            return current_phase == 'Buffered'
+        except Exception as e:
+            self.buffer_logger.warning(f"Could not verify phase for {name}: {e}")
+            return False
+
+    async def process_buffered_generator(
+        self,
+        bmhgen: Dict[str, Any],
+        unified_client: UnifiedServerClient,
+        yaml_generator: YamlGenerator
+    ) -> None:
         """Process a single buffered BareMetalHostGenerator"""
         name = bmhgen['metadata']['name']
         namespace = bmhgen['metadata']['namespace']
-        server_name = name  # Define server name here
+        server_name = name
         self.buffer_logger.info(f"Processing buffered generator: {name}")
 
         # Safety check: verify this generator is still in Buffered phase
-        # (prevents race condition where status was updated by another process)
-        current_status = bmhgen.get('status', {})
-        if current_status.get('phase') != 'Buffered':
-            self.buffer_logger.warning(f"Generator {name} is no longer in Buffered phase (current: {current_status.get('phase')}), skipping")
+        if not await self._verify_still_buffered(namespace, name):
+            self.buffer_logger.warning(f"Generator {name} is no longer in Buffered phase, skipping")
             return
 
         try:
@@ -111,67 +199,64 @@ class BufferManager:
 
             if not mac_address or not ipmi_address:
                 self.buffer_logger.error(f"Missing server info for buffered generator {name}")
-                spec = bmhgen.get('spec', {})  # Check if spec is None
+                spec = bmhgen.get('spec', {})
                 try:
-                    server_name = spec.get('name', name)
+                    server_name = spec.get('serverName', name)
                     mac_address, ipmi_address = unified_client.get_server_info(server_name, server_vendor)
-                    patch = {
-                        "status": {
-                            "macAddress": mac_address,
-                            "ipmiAddress": ipmi_address
-                        }
+                    status_update = {
+                        "macAddress": mac_address,
+                        "ipmiAddress": ipmi_address
                     }
-
-                    self.custom_api.patch_namespaced_custom_object_status(
-                        group="infra.example.com",
-                        version="v1alpha1",
-                        namespace=namespace,
-                        plural="baremetalhostgenerators",
-                        name=name,
-                        body=patch
+                    OpenShiftUtils.update_bmh_status(
+                        self.custom_api, "infra.example.com", "v1alpha1",
+                        namespace, "baremetalhostgenerators", name, status_update
                     )
-
-                    OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, patch)
-
                 except Exception as e:
                     self.buffer_logger.error(f"Error getting server info for {name}: {str(e)}")
-                    patch = {
-                        "status": {
-                            "phase": "Failed",
-                            "message": "Cannot retrieve the server info"
-                        }
+                    error_update = {
+                        "phase": "Failed",
+                        "message": "Cannot retrieve the server info"
                     }
-                    OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, patch)
+                    OpenShiftUtils.update_bmh_status(
+                        self.custom_api, "infra.example.com", "v1alpha1",
+                        namespace, "baremetalhostgenerators", name, error_update
+                    )
                     return
 
-            spec = bmhgen.get('spec', {})  # Check if spec is None
+            spec = bmhgen.get('spec', {})
             target_namespace = spec.get('namespace', namespace)
             infra_env = spec.get('infraEnv')
 
-            # Check if BareMetalHost already exists (prevents duplicate creation on retry)
+            # Check if BareMetalHost already exists (idempotency check)
             try:
-                existing_bmh = self.custom_api.get_namespaced_custom_object(
-                    group="metal3.io",
-                    version="v1alpha1",
-                    namespace=target_namespace,
-                    plural="baremetalhosts",
-                    name=name
+                loop = asyncio.get_event_loop()
+                existing_bmh = await loop.run_in_executor(
+                    None,
+                    lambda: self.custom_api.get_namespaced_custom_object(
+                        group="metal3.io",
+                        version="v1alpha1",
+                        namespace=target_namespace,
+                        plural="baremetalhosts",
+                        name=name
+                    )
                 )
                 self.buffer_logger.info(f"BareMetalHost {name} already exists in {target_namespace}, updating status to Completed")
+
                 # BMH already exists, just update the generator status
-                patch = {
-                    "status": {
-                        "phase": "Completed",
-                        "message": f"BareMetalHost {name} already exists (released from buffer)",
-                        "bmhName": name,
-                        "bmhNamespace": target_namespace,
-                        "macAddress": mac_address,
-                        "ipmiAddress": ipmi_address,
-                        "serverVendor": server_vendor,
-                        "vlanId": vlan_id
-                    }
+                completed_status = {
+                    "phase": "Completed",
+                    "message": f"BareMetalHost {name} already exists (released from buffer)",
+                    "bmhName": name,
+                    "bmhNamespace": target_namespace,
+                    "macAddress": mac_address,
+                    "ipmiAddress": ipmi_address,
+                    "serverVendor": server_vendor,
+                    "vlanId": vlan_id
                 }
-                OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, patch)
+                OpenShiftUtils.update_bmh_status(
+                    self.custom_api, "infra.example.com", "v1alpha1",
+                    namespace, "baremetalhostgenerators", name, completed_status
+                )
                 self.buffer_logger.info(f"Updated generator {name} status to Completed (BMH already existed)")
                 return
             except Exception as check_error:
@@ -181,15 +266,13 @@ class BufferManager:
                 else:
                     # Unexpected error checking for BMH existence
                     self.buffer_logger.warning(f"Error checking if BareMetalHost exists: {check_error}")
-                    # Continue anyway and let the create operation handle it
 
-            # Create BMC Secret (credentials come from config.py based on vendor)
+            # Create BMC Secret
             bmc_secret = yaml_generator.generate_bmc_secret(
                 name=name,
                 namespace=target_namespace,
                 server_vendor=server_vendor
             )
-
             OpenShiftUtils.create_bmc_secret(self.core_v1, target_namespace, bmc_secret, server_name)
 
             # Create BareMetalHost
@@ -202,25 +285,11 @@ class BufferManager:
                 infra_env=infra_env,
                 labels=spec.get('labels', {})
             )
-
             OpenShiftUtils.create_baremetalhost(self.custom_api, target_namespace, bmh, server_name)
             self.buffer_logger.info(f"Created BareMetalHost: {name}")
 
-            # Update generator status to Completed
-            patch = {
-                "status": {
-                    "phase": "Completed",
-                    "message": f"Successfully created BareMetalHost {name} (released from buffer)",
-                    "bmhName": name,
-                    "bmhNamespace": target_namespace,
-                    "macAddress": mac_address,
-                    "ipmiAddress": ipmi_address,
-                    "serverVendor": server_vendor,
-                    "vlanId": vlan_id
-                }
-            }
-
-            if server_vendor and server_vendor.upper() == 'DELL':
+            # Create NMStateConfig for Dell servers
+            if server_vendor and server_vendor.upper() == 'DELL' and vlan_id:
                 nmstate_config = yaml_generator.generate_nmstate_config(
                     name=server_name,
                     namespace=target_namespace,
@@ -228,99 +297,140 @@ class BufferManager:
                     infra_env=infra_env,
                     vlan_id=vlan_id
                 )
-
                 OpenShiftUtils.create_nmstate_config(self.custom_api, target_namespace, nmstate_config, server_name)
+
+            # Update generator status to Completed
+            completed_status = {
+                "phase": "Completed",
+                "message": f"Successfully created BareMetalHost {name} (released from buffer)",
+                "bmhName": name,
+                "bmhNamespace": target_namespace,
+                "macAddress": mac_address,
+                "ipmiAddress": ipmi_address,
+                "serverVendor": server_vendor,
+                "vlanId": vlan_id
+            }
 
             # CRITICAL: Update status to Completed - this must succeed to prevent re-processing
             try:
-                OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, patch)
+                OpenShiftUtils.update_bmh_status(
+                    self.custom_api, "infra.example.com", "v1alpha1",
+                    namespace, "baremetalhostgenerators", name, completed_status
+                )
                 self.buffer_logger.info(f"Updated generator {name} status to Completed")
             except Exception as status_error:
                 self.buffer_logger.error(f"CRITICAL: Failed to update generator {name} status to Completed: {status_error}")
-                # Try one more time with a simpler patch
-                try:
-                    simple_patch = {"status": {"phase": "Completed", "message": f"BareMetalHost {name} created"}}
-                    OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, simple_patch)
-                    self.buffer_logger.warning(f"Successfully updated {name} status on retry with simple patch")
-                except Exception as retry_error:
-                    self.buffer_logger.critical(f"FAILED to update {name} status even on retry - generator may be re-processed: {retry_error}")
-                    raise
+                raise
 
         except Exception as e:
             self.buffer_logger.error(f"Error processing buffered generator {name}: {str(e)}")
             # Try to mark as Failed to prevent infinite retry loop
             try:
-                error_patch = {
-                    "status": {
-                        "phase": "Failed",
-                        "message": f"Error releasing from buffer: {str(e)}"
-                    }
+                error_status = {
+                    "phase": "Failed",
+                    "message": f"Error releasing from buffer: {str(e)}"
                 }
-                OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, error_patch)
+                OpenShiftUtils.update_bmh_status(
+                    self.custom_api, "infra.example.com", "v1alpha1",
+                    namespace, "baremetalhostgenerators", name, error_status
+                )
                 self.buffer_logger.info(f"Marked generator {name} as Failed to prevent retry loop")
             except Exception as final_error:
                 self.buffer_logger.critical(f"Could not update {name} to Failed status: {final_error}")
             raise
-    async def buffer_check_loop(self, unified_client: UnifiedServerClient, yaml_generator: YamlGenerator) -> None:
-        self.buffer_logger.info("Starting buffer check loop")
-        while True:
-            try:
-                await asyncio.sleep(self.BUFFER_CHECK_INTERVAL)
-                # Use async with for asyncio.Lock
-                async with self.bmh_buffer_lock:
-                    self.buffer_logger.info("Running buffer check")
 
-                    available_bmhs = await self.get_available_baremetal_hosts()
-                    available_count = len(available_bmhs)
+    async def buffer_check_iteration(
+        self,
+        unified_client: UnifiedServerClient,
+        yaml_generator: YamlGenerator
+    ) -> Dict[str, int]:
+        """
+        Single iteration of buffer check - used by kopf daemon.
 
-                    self.buffer_logger.info(f"Available BareMetalHosts: {available_count}/{self.MAX_AVAILABLE_SERVERS}")
-                    if available_count < self.MAX_AVAILABLE_SERVERS:
-                        slots_available = self.MAX_AVAILABLE_SERVERS - available_count
+        Returns statistics about the check iteration.
+        """
+        stats = {
+            "available_count": 0,
+            "buffered_count": 0,
+            "released_count": 0,
+            "failed_count": 0
+        }
 
-                        buffered = await self.get_buffered_generators()
-                        for i, bmhgen in enumerate(buffered[:slots_available]):
-                            gen_name = bmhgen['metadata']['name']
-                            self.buffer_logger.info(f"Releasing buffered generator {gen_name} from buffer")
-                            try:
-                                await self.process_buffered_generator(bmhgen, unified_client, yaml_generator)
-                            except Exception as process_error:
-                                self.buffer_logger.error(f"Failed to process buffered generator {gen_name}: {process_error}")
-                                # Continue with next generator - don't let one failure stop the whole loop
-                                continue
-                            if i < slots_available - 1:
-                                await asyncio.sleep(5)
-                    else:
-                        self.buffer_logger.info("No slots available to release servers from buffer")
-            except Exception as e:
-                self.buffer_logger.error(f"Error in buffer check loop: {str(e)}")
-                
-    async def is_to_buffer(self, server_name: str, mac_address: str, ipmi_address: str, server_vendor: str, vlan_id: str, namespace: str, name: str) -> bool:
+        async with self.lock:
+            self.buffer_logger.info("Running buffer check iteration")
+
+            available_bmhs = await self.get_available_baremetal_hosts()
+            stats["available_count"] = len(available_bmhs)
+
+            self.buffer_logger.info(f"Available BareMetalHosts: {stats['available_count']}/{self.MAX_AVAILABLE_SERVERS}")
+
+            if stats["available_count"] < self.MAX_AVAILABLE_SERVERS:
+                slots_available = self.MAX_AVAILABLE_SERVERS - stats["available_count"]
+
+                buffered = await self.get_buffered_generators()
+                stats["buffered_count"] = len(buffered)
+
+                for i, bmhgen in enumerate(buffered[:slots_available]):
+                    gen_name = bmhgen['metadata']['name']
+                    self.buffer_logger.info(f"Releasing buffered generator {gen_name} from buffer")
+                    try:
+                        await self.process_buffered_generator(bmhgen, unified_client, yaml_generator)
+                        stats["released_count"] += 1
+                    except Exception as process_error:
+                        self.buffer_logger.error(f"Failed to process buffered generator {gen_name}: {process_error}")
+                        stats["failed_count"] += 1
+                        # Continue with next generator - don't let one failure stop the whole loop
+                        continue
+
+                    # Small delay between releases to avoid overwhelming the API server
+                    if i < slots_available - 1:
+                        await asyncio.sleep(2)
+            else:
+                self.buffer_logger.info("No slots available to release servers from buffer")
+
+        return stats
+
+    async def is_to_buffer(
+        self,
+        server_name: str,
+        mac_address: str,
+        ipmi_address: str,
+        server_vendor: str,
+        vlan_id: str,
+        namespace: str,
+        name: str
+    ) -> bool:
         """
         Check if server should be buffered or created immediately.
 
-        Thread-safe: Uses asyncio.Lock to coordinate with background buffer task.
+        Thread-safe: Uses asyncio.Lock to coordinate with kopf daemon.
         """
-        async with self.bmh_buffer_lock:
+        async with self.lock:
             available_bmhs = await self.get_available_baremetal_hosts()
             available_count = len(available_bmhs)
 
             self.buffer_logger.info(f"Current available BareMetalHosts: {available_count}/{self.MAX_AVAILABLE_SERVERS}")
+
             if available_count >= self.MAX_AVAILABLE_SERVERS:
                 self.buffer_logger.info(f"Buffering server {server_name} as buffer is full")
                 try:
                     status_update = {
                         "phase": "Buffered",
                         "message": f"Server buffered (available: {available_count}/{self.MAX_AVAILABLE_SERVERS})",
+                        "bufferedAt": datetime.utcnow().isoformat() + "Z",
                         "macAddress": mac_address,
                         "ipmiAddress": ipmi_address,
                         "serverVendor": server_vendor,
                         "vlanId": vlan_id
                     }
-                    OpenShiftUtils.update_bmh_status(self.custom_api, "infra.example.com", "v1alpha1", namespace, "baremetalhostgenerators", name, status_update)
-                    self.buffer_logger.info(f"Buffering server {server_name} - limit reached")
+                    OpenShiftUtils.update_bmh_status(
+                        self.custom_api, "infra.example.com", "v1alpha1",
+                        namespace, "baremetalhostgenerators", name, status_update
+                    )
+                    self.buffer_logger.info(f"Buffered server {server_name} - limit reached")
                 except Exception as e:
                     self.buffer_logger.error(f"Error updating status to Buffered for {server_name}: {str(e)}")
                 return True
             else:
-                self.buffer_logger.info(f"Creating BareMetalHost immediately - room available {available_count} / {self.MAX_AVAILABLE_SERVERS}")
+                self.buffer_logger.info(f"Creating BareMetalHost immediately - room available {available_count}/{self.MAX_AVAILABLE_SERVERS}")
                 return False

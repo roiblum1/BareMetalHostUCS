@@ -25,7 +25,13 @@ class OpenShiftUtils:
             raise
 
     @staticmethod
-    def create_nmstate_config(custom_api: client.CustomObjectsApi, target_namespace: str, nmstate_config: dict, server_name: str) -> None:
+    def create_nmstate_config(custom_api: client.CustomObjectsApi, target_namespace: str, nmstate_config: dict, server_name: str) -> bool:
+        """
+        Create NMStateConfig resource for network configuration.
+
+        Returns:
+            True if created, False if already exists (409 is not an error)
+        """
         logger.debug(f"Creating NMStateConfig {server_name} in namespace {target_namespace}")
         try:
             custom_api.create_namespaced_custom_object(
@@ -36,14 +42,17 @@ class OpenShiftUtils:
                 body=nmstate_config
             )
             logger.info(f"Successfully created NMStateConfig nmstate-config-{server_name}")
+            return True
         except client.ApiException as e:
             if e.status == 404:
                 logger.error(f"NMStateConfig CRD not found in the cluster: {e}")
+                raise
             elif e.status == 409:
-                logger.warning(f"NMStateConfig nmstate-config-{server_name} already exists: {e}")
+                logger.info(f"NMStateConfig nmstate-config-{server_name} already exists, continuing")
+                return False  # Not an error - idempotent behavior
             else:
                 logger.error(f"Failed to create NMStateConfig nmstate-config-{server_name}: {e}")
-            raise
+                raise
 
     @staticmethod
     def delete_nmstate_config(custom_api: client.CustomObjectsApi, target_namespace: str, server_name: str) -> None:
@@ -65,7 +74,13 @@ class OpenShiftUtils:
             raise
 
     @staticmethod
-    def create_bmc_secret(core_v1: client.CoreV1Api, target_namespace: str, bmc_secret: dict, server_name: str) -> None:
+    def create_bmc_secret(core_v1: client.CoreV1Api, target_namespace: str, bmc_secret: dict, server_name: str) -> bool:
+        """
+        Create BMC Secret for a server.
+
+        Returns:
+            True if created, False if already exists (409 is not an error)
+        """
         logger.debug(f"Creating BMC Secret {bmc_secret['metadata']['name']} in namespace {target_namespace}")
         try:
             core_v1.create_namespaced_secret(
@@ -73,12 +88,14 @@ class OpenShiftUtils:
                 body=bmc_secret
             )
             logger.info(f"Successfully created BMC Secret {bmc_secret['metadata']['name']}")
+            return True
         except client.ApiException as e:
             if e.status == 409:
-                logger.warning(f"BMC Secret {bmc_secret['metadata']['name']} already exists: {e}")
+                logger.info(f"BMC Secret {bmc_secret['metadata']['name']} already exists, continuing")
+                return False  # Not an error - idempotent behavior
             else:
                 logger.error(f"Failed to create BMC Secret {bmc_secret['metadata']['name']} for {server_name}: {e}")
-            raise
+                raise
 
     @staticmethod
     def delete_bmc_secret(core_v1: client.CoreV1Api, target_namespace: str, secret_name: str) -> None:
@@ -97,7 +114,13 @@ class OpenShiftUtils:
             raise
 
     @staticmethod
-    def create_baremetalhost(custom_api: client.CustomObjectsApi, target_namespace: str, bmh: dict, server_name: str) -> None:
+    def create_baremetalhost(custom_api: client.CustomObjectsApi, target_namespace: str, bmh: dict, server_name: str) -> bool:
+        """
+        Create BareMetalHost resource.
+
+        Returns:
+            True if created, False if already exists (409 is not an error)
+        """
         logger.debug(f"Creating BareMetalHost {bmh['metadata']['name']} in namespace {target_namespace}")
         try:
             custom_api.create_namespaced_custom_object(
@@ -108,12 +131,14 @@ class OpenShiftUtils:
                 body=bmh
             )
             logger.info(f"Successfully created BareMetalHost {bmh['metadata']['name']}")
+            return True
         except client.ApiException as e:
             if e.status == 409:
-                logger.warning(f"BareMetalHost {bmh['metadata']['name']} already exists: {e}")
+                logger.info(f"BareMetalHost {bmh['metadata']['name']} already exists, continuing")
+                return False  # Not an error - idempotent behavior
             else:
                 logger.error(f"Failed to create BareMetalHost {bmh['metadata']['name']} for {server_name}: {e}")
-            raise
+                raise
 
     @staticmethod
     def delete_baremetalhost(custom_api: client.CustomObjectsApi, target_namespace: str, bmh_name: str) -> None:

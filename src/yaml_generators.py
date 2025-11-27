@@ -272,7 +272,7 @@ class YamlGenerator:
         if not vlan_id or vlan_id == "None" or str(vlan_id).strip() == "":
             raise ValueError(f"VLAN ID is required for NMStateConfig but got: {vlan_id}")
 
-        # Validate VLAN ID is numeric
+        # Validate VLAN ID is numeric and convert to integer
         try:
             vlan_id_int = int(vlan_id)
             if vlan_id_int < 1 or vlan_id_int > 4094:
@@ -284,7 +284,7 @@ class YamlGenerator:
             interface_name = "ens2f0np0"
         else:
             interface_name = "eno12399np0"
-        self.bmh_logger.info(f"Configuring the nmstateconfig with {interface_name}.{vlan_id}")
+        self.bmh_logger.info(f"Configuring the nmstateconfig with {interface_name}.{vlan_id_int}")
         nmstate_data = {
             "apiVersion": "agent-install.openshift.io/v1beta1",
             "kind": "NMStateConfig",
@@ -316,12 +316,12 @@ class YamlGenerator:
                                 "dhcp-client-id": "mac",
                                 "enabled": True
                             },
-                            "name": f"{interface_name}.{vlan_id}",
+                            "name": f"{interface_name}.{vlan_id_int}",
                             "state": "up",
                             "type": "vlan",
                             "vlan": {
                                 "base-iface": f"{interface_name}",
-                                "id": vlan_id
+                                "id": vlan_id_int
                             }
                         }
                     ]
