@@ -79,10 +79,6 @@ spec:
       type: string
       jsonPath: .status.macAddress
       description: "MAC address of the server"
-    - name: Message
-      type: string
-      jsonPath: .status.message
-      priority: 1
     - name: Age
       type: date
       jsonPath: .metadata.creationTimestamp
