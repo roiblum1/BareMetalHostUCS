@@ -7,9 +7,10 @@ import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 from src.server_strategy import ServerStrategy
+from src.config import dell_strategy_logger
 
 disable_warnings(InsecureRequestWarning)
-logger = logging.getLogger('dell_strategy')
+logger = dell_strategy_logger
 
 class DellServerStrategy(ServerStrategy):
     def __init__(self, credentials: Dict[str, str]):

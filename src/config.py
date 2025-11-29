@@ -56,6 +56,16 @@ operator_logger.setLevel(get_log_level())
 buffer_logger = logging.getLogger('bmh_buffer')
 buffer_logger.setLevel(get_log_level())
 
+# Strategy loggers
+hp_strategy_logger = logging.getLogger('hp_strategy')
+hp_strategy_logger.setLevel(get_log_level())
+
+dell_strategy_logger = logging.getLogger('dell_strategy')
+dell_strategy_logger.setLevel(get_log_level())
+
+cisco_strategy_logger = logging.getLogger('cisco_strategy')
+cisco_strategy_logger.setLevel(get_log_level())
+
 
 # ============================================================================
 # Buffer Management Configuration

@@ -7,9 +7,10 @@ import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 from src.server_strategy import ServerStrategy
+from src.config import hp_strategy_logger
 
 disable_warnings(InsecureRequestWarning)
-logger = logging.getLogger('hp_strategy')
+logger = hp_strategy_logger
 
 class HPServerStrategy(ServerStrategy):
     

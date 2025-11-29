@@ -7,9 +7,10 @@ import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 from src.server_strategy import ServerStrategy
+from src.config import cisco_strategy_logger
 
 disable_warnings(InsecureRequestWarning)
-logger = logging.getLogger('cisco_strategy')
+logger = cisco_strategy_logger
 
 class CiscoServerStrategy(ServerStrategy):
     
