@@ -1,6 +1,6 @@
 import logging
 from kubernetes import client, config
-from src.config import operator_logger
+from src.config import operator_logger, BMHCRD, NMStateConfigCRD
 
 logger = operator_logger
 
@@ -35,10 +35,10 @@ class OpenShiftUtils:
         logger.debug(f"Creating NMStateConfig {server_name} in namespace {target_namespace}")
         try:
             custom_api.create_namespaced_custom_object(
-                group="agent-install.openshift.io",
-                version="v1beta1",
+                group=NMStateConfigCRD.GROUP,
+                version=NMStateConfigCRD.VERSION,
                 namespace=target_namespace,
-                plural="nmstateconfigs",
+                plural=NMStateConfigCRD.PLURAL,
                 body=nmstate_config
             )
             logger.info(f"Successfully created NMStateConfig nmstate-config-{server_name}")
@@ -65,10 +65,10 @@ class OpenShiftUtils:
         logger.debug(f"Deleting NMStateConfig nmstate-config-{server_name} from namespace {target_namespace}")
         try:
             custom_api.delete_namespaced_custom_object(
-                group="agent-install.openshift.io",
-                version="v1beta1",
+                group=NMStateConfigCRD.GROUP,
+                version=NMStateConfigCRD.VERSION,
                 namespace=target_namespace,
-                plural="nmstateconfigs",
+                plural=NMStateConfigCRD.PLURAL,
                 name=f"nmstate-config-{server_name}"
                 )
             logger.info(f"Successfully deleted NMStateConfig nmstate-config-{server_name}")
@@ -140,10 +140,10 @@ class OpenShiftUtils:
         logger.debug(f"Creating BareMetalHost {bmh['metadata']['name']} in namespace {target_namespace}")
         try:
             custom_api.create_namespaced_custom_object(
-                group="metal3.io",
-                version="v1alpha1",
+                group=BMHCRD.GROUP,
+                version=BMHCRD.VERSION,
                 namespace=target_namespace,
-                plural="baremetalhosts",
+                plural=BMHCRD.PLURAL,
                 body=bmh
             )
             logger.info(f"Successfully created BareMetalHost {bmh['metadata']['name']}")
@@ -167,10 +167,10 @@ class OpenShiftUtils:
         logger.debug(f"Deleting BareMetalHost {bmh_name} from namespace {target_namespace}")
         try:
             custom_api.delete_namespaced_custom_object(
-                group="metal3.io",
-                version="v1alpha1",
+                group=BMHCRD.GROUP,
+                version=BMHCRD.VERSION,
                 namespace=target_namespace,
-                plural="baremetalhosts",
+                plural=BMHCRD.PLURAL,
                 name=bmh_name
             )
             logger.info(f"Successfully deleted BareMetalHost {bmh_name}")

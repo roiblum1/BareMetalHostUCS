@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 from src.server_strategy import ServerType
 import yaml
-from src.config import bmh_logger
+from src.config import bmh_logger, BMHCRD, NMStateConfigCRD
 
 
 # ============================================================================
@@ -163,8 +163,8 @@ class YamlGenerator:
         secret_name = get_secret_name(server_vendor, name)
         
         bmh_data = {
-            "apiVersion": "metal3.io/v1alpha1",
-            "kind": "BareMetalHost",
+            "apiVersion": f"{BMHCRD.GROUP}/{BMHCRD.VERSION}",
+            "kind": BMHCRD.KIND,
             "metadata": {
                 "name": name,
                 "namespace": namespace,
@@ -286,8 +286,8 @@ class YamlGenerator:
             interface_name = "eno12399np0"
         self.bmh_logger.info(f"Configuring the nmstateconfig with {interface_name}.{vlan_id_int}")
         nmstate_data = {
-            "apiVersion": "agent-install.openshift.io/v1beta1",
-            "kind": "NMStateConfig",
+            "apiVersion": f"{NMStateConfigCRD.GROUP}/{NMStateConfigCRD.VERSION}",
+            "kind": NMStateConfigCRD.KIND,
             "metadata": {
                 "labels": {
                     "infraenvs.agent-install.openshift.io": infra_env

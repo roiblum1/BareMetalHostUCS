@@ -13,7 +13,7 @@ from src.buffer_manager import BufferManager
 from src.openshift_utils import OpenShiftUtils
 from src.yaml_generators import YamlGenerator
 from src.unified_server_client import UnifiedServerClient, initialize_unified_client
-from src.config import operator_logger, buffer_logger, BUFFER_CHECK_INTERVAL
+from src.config import operator_logger, buffer_logger, BUFFER_CHECK_INTERVAL, BMHGenCRD, BMHCRD, Phase
 
 # Initialize YAML generator
 yaml_generator = YamlGenerator()
@@ -53,7 +53,7 @@ async def configure(settings: kopf.OperatorSettings, **_):
     settings.execution.max_workers = 4
     settings.posting.enabled = False
     settings.batching.worker_limit = 1
-    settings.persistence.finalizer = 'bmhgenerator.infra.example.com/finalizer'
+    settings.persistence.finalizer = BMHGenCRD.FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
     operator_logger.info("Operator settings configured.")
 
@@ -64,9 +64,9 @@ async def configure(settings: kopf.OperatorSettings, **_):
         operator_logger.info("Successfully accessed Kubernetes API.")
 
         custom_api.list_cluster_custom_object(
-            group="infra.example.com",
-            version="v1alpha1",
-            plural="baremetalhostgenerators"
+            group=BMHGenCRD.GROUP,
+            version=BMHGenCRD.VERSION,
+            plural=BMHGenCRD.PLURAL
         )
         operator_logger.info("Successfully accessed BareMetalHostGenerator custom resources.")
     except Exception as e:
@@ -143,7 +143,7 @@ async def _buffer_check_loop():
         await asyncio.sleep(BUFFER_CHECK_INTERVAL)
 
 
-@kopf.on.create('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
+@kopf.on.create(BMHGenCRD.GROUP, BMHGenCRD.VERSION, BMHGenCRD.PLURAL)
 async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotations: Optional[Dict[str, str]], **kwargs):
     """
     Handler for creating BareMetalHost resources from BareMetalHostGenerator CRDs.
@@ -171,10 +171,10 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
                 }
             }
             custom_api.patch_namespaced_custom_object(
-                group="infra.example.com",
-                version="v1alpha1",
+                group=BMHGenCRD.GROUP,
+                version=BMHGenCRD.VERSION,
                 namespace=namespace,
-                plural="baremetalhostgenerators",
+                plural=BMHGenCRD.PLURAL,
                 name=name,
                 body=patch_body,
                 _content_type="application/merge-patch+json"
@@ -197,12 +197,12 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
 
     # Update status to Processing
     status_update = {
-        "phase": "Processing",
+        "phase": Phase.PROCESSING,
         "message": f"Looking up server {server_name} in management systems."
     }
     OpenShiftUtils.update_bmh_status(
-        custom_api, "infra.example.com", "v1alpha1",
-        namespace, "baremetalhostgenerators", name, status_update
+        custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+        namespace, BMHGenCRD.PLURAL, name, status_update
     )
 
     try:
@@ -266,7 +266,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
 
         # Update status to Completed
         status_update = {
-            "phase": "Completed",
+            "phase": Phase.COMPLETED,
             "message": f"Successfully created BareMetalHost {server_name}",
             "bmhName": server_name,
             "bmhNamespace": target_namespace,
@@ -277,15 +277,15 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         }
 
         OpenShiftUtils.update_bmh_status(
-            custom_api, "infra.example.com", "v1alpha1",
-            namespace, "baremetalhostgenerators", name, status_update
+            custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+            namespace, BMHGenCRD.PLURAL, name, status_update
         )
         operator_logger.info(f"Successfully completed BareMetalHost creation for: {server_name}")
 
     except Exception as e:
         operator_logger.error(f"Error processing BareMetalHostGenerator {name}: {e}")
         status_update = {
-            "phase": "Failed",
+            "phase": Phase.FAILED,
             "message": str(e)
         }
         # Preserve MAC/IP if they were retrieved before error
@@ -297,13 +297,13 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             status_update["serverVendor"] = server_vendor
 
         OpenShiftUtils.update_bmh_status(
-            custom_api, "infra.example.com", "v1alpha1",
-            namespace, "baremetalhostgenerators", name, status_update
+            custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+            namespace, BMHGenCRD.PLURAL, name, status_update
         )
         raise kopf.PermanentError(f"Failed to create BareMetalHost for {server_name}: {e}")
 
 
-@kopf.on.update('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
+@kopf.on.update(BMHGenCRD.GROUP, BMHGenCRD.VERSION, BMHGenCRD.PLURAL)
 async def update_bmh(spec, status, name, **kwargs):
     """Handler for updates to BareMetalHostGenerator - currently ignored as resource is immutable"""
     operator_logger.info(f"BareMetalHostGenerator {name} update ignored - resource is immutable.")
@@ -311,7 +311,7 @@ async def update_bmh(spec, status, name, **kwargs):
     return status
 
 
-@kopf.on.delete('infra.example.com', 'v1alpha1', 'baremetalhostgenerators')
+@kopf.on.delete(BMHGenCRD.GROUP, BMHGenCRD.VERSION, BMHGenCRD.PLURAL)
 async def delete_bmh(spec, name, namespace, status, **kwargs):
     """
     Handler for deleting BareMetalHostGenerator CRDs.

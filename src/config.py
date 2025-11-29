@@ -1,9 +1,11 @@
 """
 Central configuration module for BareMetalHost Generator Operator.
 
-This module provides ONLY:
+This module provides:
 - Centralized logging configuration
 - Buffer management constants
+- Kubernetes CRD constants (BMHGen, BMH, NMStateConfig)
+- Status phase constants
 
 All vendor-specific logic (BMC credentials, address formats) is in yaml_generators.py.
 Management system credentials are read directly in unified_server_client.py.
@@ -64,3 +66,49 @@ MAX_AVAILABLE_SERVERS = int(os.getenv('MAX_AVAILABLE_SERVERS', '20'))
 
 # Interval in seconds between buffer checks
 BUFFER_CHECK_INTERVAL = int(os.getenv('BUFFER_CHECK_INTERVAL', '30'))
+
+
+# ============================================================================
+# Kubernetes CRD Constants
+# ============================================================================
+
+# BareMetalHostGenerator CRD Constants
+class BMHGenCRD:
+    """Constants for BareMetalHostGenerator Custom Resource Definition"""
+    GROUP = "infra.example.com"
+    VERSION = "v1alpha1"
+    PLURAL = "baremetalhostgenerators"
+    KIND = "BareMetalHostGenerator"
+    FINALIZER = "bmhgenerator.infra.example.com/finalizer"
+
+
+# BareMetalHost CRD Constants (Metal3)
+class BMHCRD:
+    """Constants for BareMetalHost Custom Resource Definition"""
+    GROUP = "metal3.io"
+    VERSION = "v1alpha1"
+    PLURAL = "baremetalhosts"
+    KIND = "BareMetalHost"
+
+
+# NMStateConfig CRD Constants
+class NMStateConfigCRD:
+    """Constants for NMStateConfig Custom Resource Definition"""
+    GROUP = "agent-install.openshift.io"
+    VERSION = "v1beta1"
+    PLURAL = "nmstateconfigs"
+    KIND = "NMStateConfig"
+
+
+# ============================================================================
+# Status Phase Constants
+# ============================================================================
+
+class Phase:
+    """Status phases for BareMetalHostGenerator"""
+    PROCESSING = "Processing"
+    BUFFERED = "Buffered"
+    COMPLETED = "Completed"
+    FAILED = "Failed"
+
+

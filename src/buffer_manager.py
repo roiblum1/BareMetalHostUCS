@@ -9,7 +9,7 @@ from kubernetes import client
 from src.yaml_generators import YamlGenerator
 from src.openshift_utils import OpenShiftUtils
 from src.unified_server_client import UnifiedServerClient
-from src.config import buffer_logger, MAX_AVAILABLE_SERVERS, BUFFER_CHECK_INTERVAL
+from src.config import buffer_logger, MAX_AVAILABLE_SERVERS, BUFFER_CHECK_INTERVAL, BMHGenCRD, BMHCRD, Phase
 
 class BufferManager:
     def __init__(self, custom_api: client.CustomObjectsApi = None, core_v1: client.CoreV1Api = None):
@@ -60,9 +60,9 @@ class BufferManager:
             bmhs = await loop.run_in_executor(
                 None,
                 lambda: self.custom_api.list_cluster_custom_object(
-                    group="metal3.io",
-                    version="v1alpha1",
-                    plural="baremetalhosts"
+                    group=BMHCRD.GROUP,
+                    version=BMHCRD.VERSION,
+                    plural=BMHCRD.PLURAL
                 )
             )
 
@@ -108,16 +108,16 @@ class BufferManager:
             bmhgens = await loop.run_in_executor(
                 None,
                 lambda: self.custom_api.list_cluster_custom_object(
-                    group="infra.example.com",
-                    version="v1alpha1",
-                    plural="baremetalhostgenerators"
+                    group=BMHGenCRD.GROUP,
+                    version=BMHGenCRD.VERSION,
+                    plural=BMHGenCRD.PLURAL
                 )
             )
 
             buffered = []
             for bmhgen in bmhgens.get("items", []):
                 status = bmhgen.get("status", {})
-                if status.get("phase") == "Buffered":
+                if status.get("phase") == Phase.BUFFERED:
                     buffered.append(bmhgen)
                     self.buffer_logger.debug(f"Generator {bmhgen['metadata']['name']} is buffered")
 
@@ -144,15 +144,15 @@ class BufferManager:
             current_gen = await loop.run_in_executor(
                 None,
                 lambda: self.custom_api.get_namespaced_custom_object(
-                    group="infra.example.com",
-                    version="v1alpha1",
+                    group=BMHGenCRD.GROUP,
+                    version=BMHGenCRD.VERSION,
                     namespace=namespace,
-                    plural="baremetalhostgenerators",
+                    plural=BMHGenCRD.PLURAL,
                     name=name
                 )
             )
             current_phase = current_gen.get('status', {}).get('phase')
-            return current_phase == 'Buffered'
+            return current_phase == Phase.BUFFERED
         except Exception as e:
             self.buffer_logger.warning(f"Could not verify phase for {name}: {e}")
             return False
@@ -208,18 +208,18 @@ class BufferManager:
                         "ipmiAddress": ipmi_address
                     }
                     OpenShiftUtils.update_bmh_status(
-                        self.custom_api, "infra.example.com", "v1alpha1",
-                        namespace, "baremetalhostgenerators", name, status_update
+                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                        namespace, BMHGenCRD.PLURAL, name, status_update
                     )
                 except Exception as e:
                     self.buffer_logger.error(f"Error getting server info for {name}: {str(e)}")
                     error_update = {
-                        "phase": "Failed",
+                        "phase": Phase.FAILED,
                         "message": "Cannot retrieve the server info"
                     }
                     OpenShiftUtils.update_bmh_status(
-                        self.custom_api, "infra.example.com", "v1alpha1",
-                        namespace, "baremetalhostgenerators", name, error_update
+                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                        namespace, BMHGenCRD.PLURAL, name, error_update
                     )
                     return
 
@@ -233,10 +233,10 @@ class BufferManager:
                 existing_bmh = await loop.run_in_executor(
                     None,
                     lambda: self.custom_api.get_namespaced_custom_object(
-                        group="metal3.io",
-                        version="v1alpha1",
+                        group=BMHCRD.GROUP,
+                        version=BMHCRD.VERSION,
                         namespace=target_namespace,
-                        plural="baremetalhosts",
+                        plural=BMHCRD.PLURAL,
                         name=name
                     )
                 )
@@ -244,7 +244,7 @@ class BufferManager:
 
                 # BMH already exists, just update the generator status
                 completed_status = {
-                    "phase": "Completed",
+                    "phase": Phase.COMPLETED,
                     "message": f"BareMetalHost {name} already exists (released from buffer)",
                     "bmhName": name,
                     "bmhNamespace": target_namespace,
@@ -254,8 +254,8 @@ class BufferManager:
                     "vlanId": vlan_id
                 }
                 OpenShiftUtils.update_bmh_status(
-                    self.custom_api, "infra.example.com", "v1alpha1",
-                    namespace, "baremetalhostgenerators", name, completed_status
+                    self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                    namespace, BMHGenCRD.PLURAL, name, completed_status
                 )
                 self.buffer_logger.info(f"Updated generator {name} status to Completed (BMH already existed)")
                 return
@@ -301,7 +301,7 @@ class BufferManager:
 
             # Update generator status to Completed
             completed_status = {
-                "phase": "Completed",
+                "phase": Phase.COMPLETED,
                 "message": f"Successfully created BareMetalHost {name} (released from buffer)",
                 "bmhName": name,
                 "bmhNamespace": target_namespace,
@@ -314,8 +314,8 @@ class BufferManager:
             # CRITICAL: Update status to Completed - this must succeed to prevent re-processing
             try:
                 OpenShiftUtils.update_bmh_status(
-                    self.custom_api, "infra.example.com", "v1alpha1",
-                    namespace, "baremetalhostgenerators", name, completed_status
+                    self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                    namespace, BMHGenCRD.PLURAL, name, completed_status
                 )
                 self.buffer_logger.info(f"Updated generator {name} status to Completed")
             except Exception as status_error:
@@ -327,12 +327,12 @@ class BufferManager:
             # Try to mark as Failed to prevent infinite retry loop
             try:
                 error_status = {
-                    "phase": "Failed",
+                    "phase": Phase.FAILED,
                     "message": f"Error releasing from buffer: {str(e)}"
                 }
                 OpenShiftUtils.update_bmh_status(
-                    self.custom_api, "infra.example.com", "v1alpha1",
-                    namespace, "baremetalhostgenerators", name, error_status
+                    self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                    namespace, BMHGenCRD.PLURAL, name, error_status
                 )
                 self.buffer_logger.info(f"Marked generator {name} as Failed to prevent retry loop")
             except Exception as final_error:
@@ -415,7 +415,7 @@ class BufferManager:
                 self.buffer_logger.info(f"Buffering server {server_name} as buffer is full")
                 try:
                     status_update = {
-                        "phase": "Buffered",
+                        "phase": Phase.BUFFERED,
                         "message": f"Server buffered (available: {available_count}/{self.MAX_AVAILABLE_SERVERS})",
                         "bufferedAt": datetime.utcnow().isoformat() + "Z",
                         "macAddress": mac_address,
@@ -424,8 +424,8 @@ class BufferManager:
                         "vlanId": vlan_id
                     }
                     OpenShiftUtils.update_bmh_status(
-                        self.custom_api, "infra.example.com", "v1alpha1",
-                        namespace, "baremetalhostgenerators", name, status_update
+                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                        namespace, BMHGenCRD.PLURAL, name, status_update
                     )
                     self.buffer_logger.info(f"Buffered server {server_name} - limit reached")
                 except Exception as e:
