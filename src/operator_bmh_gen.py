@@ -54,20 +54,20 @@ async def configure(settings: kopf.OperatorSettings, **_):
     # Moderate concurrency with non-blocking I/O to prevent event loop stalls
     # Trade-off: Small buffer overage possible, but operator stays responsive
     settings.execution.max_workers = 3  # Allow up to 3 concurrent handlers
-    settings.execution.idle_timeout = 60.0  # Timeout for idle handlers
+    settings.execution.idle_timeout = 60  # Timeout for idle handlers (seconds)
     settings.execution.queue_workers_limit = 5  # Limit queue processing workers
 
     settings.posting.enabled = False
 
     # Batching settings - moderate concurrency
     settings.batching.worker_limit = 3  # Allow up to 3 workers processing batches
-    settings.batching.batch_window = 1.0  # Wait up to 1 second to batch events
-    settings.batching.idle_timeout = 5.0  # Timeout for idle batches
-    
+    settings.batching.batch_window = 1  # Wait up to 1 second to batch events
+    settings.batching.idle_timeout = 5  # Timeout for idle batches (seconds)
+
     # Watch settings - handle large numbers of resources
-    settings.watching.server_timeout = 60.0  # Watch connection timeout
-    settings.watching.client_timeout = 60.0  # Client timeout
-    settings.watching.reconnect_backoff = 1.0  # Reconnect backoff
+    settings.watching.server_timeout = 60  # Watch connection timeout (seconds)
+    settings.watching.client_timeout = 60  # Client timeout (seconds)
+    settings.watching.reconnect_backoff = 1  # Reconnect backoff (seconds)
     
     settings.persistence.finalizer = BMHGenCRD.FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
