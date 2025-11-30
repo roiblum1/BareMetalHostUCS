@@ -176,8 +176,7 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
                 namespace=namespace,
                 plural=BMHGenCRD.PLURAL,
                 name=name,
-                body=patch_body,
-                _content_type="application/merge-patch+json"
+                body=patch_body
             )
             operator_logger.info(f"Successfully patched serverName to spec: {name}")
         except Exception as e:
@@ -193,6 +192,18 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     operator_logger.info(f"Server vendor annotation: {server_vendor}")
 
     if not infra_env:
+        # Update status before raising error
+        try:
+            status_update = {
+                "phase": Phase.FAILED,
+                "message": f"infraEnv is required in the spec of BareMetalHostGenerator {name}"
+            }
+            OpenShiftUtils.update_bmh_status(
+                custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                namespace, BMHGenCRD.PLURAL, name, status_update
+            )
+        except Exception:
+            pass  # If status update fails, error will be in annotations
         raise kopf.PermanentError(f"infraEnv is required in the spec of BareMetalHostGenerator {name}")
 
     # Update status to Processing
@@ -210,6 +221,18 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         mac_address, ip_address = unified_client.get_server_info(server_name, server_vendor)
 
         if not mac_address or not ip_address:
+            # Update status before raising error
+            try:
+                status_update = {
+                    "phase": Phase.FAILED,
+                    "message": f"Server {server_name} not found in any management system"
+                }
+                OpenShiftUtils.update_bmh_status(
+                    custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                    namespace, BMHGenCRD.PLURAL, name, status_update
+                )
+            except Exception:
+                pass  # If status update fails, error will be in annotations
             raise kopf.PermanentError(f"Server {server_name} not found in any management system")
 
         operator_logger.info(f"Found server {server_name} with MAC: {mac_address}, IP: {ip_address}")
@@ -296,10 +319,16 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         if 'server_vendor' in locals() and server_vendor:
             status_update["serverVendor"] = server_vendor
 
-        OpenShiftUtils.update_bmh_status(
-            custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-            namespace, BMHGenCRD.PLURAL, name, status_update
-        )
+        # Try to update status - if it fails, log but don't fail the handler
+        try:
+            OpenShiftUtils.update_bmh_status(
+                custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                namespace, BMHGenCRD.PLURAL, name, status_update
+            )
+        except Exception as status_error:
+            operator_logger.error(f"Failed to update status to Failed for {name}: {status_error}")
+            # Continue - the error will be visible in Kopf annotations
+        
         raise kopf.PermanentError(f"Failed to create BareMetalHost for {server_name}: {e}")
 
 

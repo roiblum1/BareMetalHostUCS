@@ -16,13 +16,14 @@ class OpenShiftUtils:
                 namespace=namespace,
                 plural=plural,
                 name=name,
-                body={"status": status_update},
-                _content_type="application/merge-patch+json"
+                body={"status": status_update}
             )
             logger.info(f"Successfully updated {plural} status for {name} with fields: {list(status_update.keys())}")
         except client.exceptions.ApiException as e:
             logger.error(f"Failed to update {plural} status for {name}: {e}")
-            raise
+            # Don't raise - allow handler to continue and update status via other means
+            # Raising here would cause error to appear only in annotations
+            logger.warning(f"Status update failed but continuing - error details: {e.body if hasattr(e, 'body') else str(e)}")
 
     @staticmethod
     def create_nmstate_config(custom_api: client.CustomObjectsApi, target_namespace: str, nmstate_config: dict, server_name: str) -> bool:
