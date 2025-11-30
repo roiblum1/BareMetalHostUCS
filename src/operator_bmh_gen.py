@@ -1,6 +1,7 @@
 import asyncio
 import os
 import subprocess
+import time
 from typing import Any, Dict, Optional
 import logging
 import kopf
@@ -50,12 +51,27 @@ async def configure(settings: kopf.OperatorSettings, **_):
     operator_logger.info("Starting operator configuration.")
 
     # Configure kopf settings
-    settings.execution.max_workers = 4
+    # Serial processing (1 worker) to prevent buffer race conditions
+    # This ensures strict enforcement of MAX_AVAILABLE_SERVERS limit
+    settings.execution.max_workers = 1  # Process CRs one at a time
+    settings.execution.idle_timeout = 60.0  # Timeout for idle handlers
+
     settings.posting.enabled = False
-    settings.batching.worker_limit = 1
+
+    # Batching settings - single worker for strict serialization
+    settings.batching.worker_limit = 1  # Process one CR at a time to avoid buffer races
+    settings.batching.batch_window = 0.5  # Short batch window for responsiveness
+    settings.batching.idle_timeout = 5.0  # Timeout for idle batches
+    
+    # Watch settings - handle large numbers of resources
+    settings.watching.server_timeout = 60.0  # Watch connection timeout
+    settings.watching.client_timeout = 60.0  # Client timeout
+    settings.watching.reconnect_backoff = 1.0  # Reconnect backoff
+    
     settings.persistence.finalizer = BMHGenCRD.FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
-    operator_logger.info("Operator settings configured.")
+
+    operator_logger.info("Operator settings configured for serial processing with strict buffer control.")
 
     # Test API access
     try:
@@ -154,7 +170,8 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     3. Creates BMC Secret, BareMetalHost, and optionally NMStateConfig
     4. Updates the generator status
     """
-    operator_logger.info(f"Processing BareMetalHostGenerator: {name} in namespace: {namespace}")
+    handler_start_time = time.time()
+    operator_logger.info(f"[CREATE] Starting handler for BareMetalHostGenerator: {name} in namespace: {namespace}")
 
     # Get or default serverName
     server_name = spec.get('serverName', name)
@@ -170,7 +187,9 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
                     "serverName": name
                 }
             }
-            custom_api.patch_namespaced_custom_object(
+            # Run blocking call in thread pool to avoid blocking event loop
+            await asyncio.to_thread(
+                custom_api.patch_namespaced_custom_object,
                 group=BMHGenCRD.GROUP,
                 version=BMHGenCRD.VERSION,
                 namespace=namespace,
@@ -203,7 +222,12 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
 
     try:
         operator_logger.info(f"Searching for server info: {server_name}")
-        mac_address, ip_address = unified_client.get_server_info(server_name, server_vendor)
+        # Run blocking network call in thread pool to avoid blocking event loop
+        mac_address, ip_address = await asyncio.to_thread(
+            unified_client.get_server_info,
+            server_name,
+            server_vendor
+        )
 
         if not mac_address or not ip_address:
             # Update status before raising error
@@ -237,7 +261,11 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             namespace=target_namespace,
             server_vendor=server_vendor
         )
-        OpenShiftUtils.create_bmc_secret(core_api, target_namespace, bmh_secret, server_name)
+        # Run blocking Kubernetes API call in thread pool
+        await asyncio.to_thread(
+            OpenShiftUtils.create_bmc_secret,
+            core_api, target_namespace, bmh_secret, server_name
+        )
 
         bmh = yaml_generator.generate_baremetal_host(
             name=server_name,
@@ -248,7 +276,11 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             infra_env=infra_env,
             labels=spec.get('labels')
         )
-        OpenShiftUtils.create_baremetalhost(custom_api, target_namespace, bmh, server_name)
+        # Run blocking Kubernetes API call in thread pool
+        await asyncio.to_thread(
+            OpenShiftUtils.create_baremetalhost,
+            custom_api, target_namespace, bmh, server_name
+        )
 
         # Create NMStateConfig for Dell servers
         if server_vendor:
@@ -261,7 +293,11 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
                     infra_env=infra_env,
                     vlanId=vlan_id
                 )
-                OpenShiftUtils.create_nmstate_config(custom_api, target_namespace, nmstate_config, server_name)
+                # Run blocking Kubernetes API call in thread pool
+                await asyncio.to_thread(
+                    OpenShiftUtils.create_nmstate_config,
+                    custom_api, target_namespace, nmstate_config, server_name
+                )
 
         # Update status to Completed
         patch.status["phase"] = Phase.COMPLETED
@@ -273,10 +309,12 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         patch.status["serverVendor"] = server_vendor
         patch.status["vlanId"] = vlan_id
 
-        operator_logger.info(f"Successfully completed BareMetalHost creation for: {server_name}")
+        handler_duration = time.time() - handler_start_time
+        operator_logger.info(f"[CREATE] Successfully completed BareMetalHost creation for: {server_name} (took {handler_duration:.2f}s)")
 
     except Exception as e:
-        operator_logger.error(f"Error processing BareMetalHostGenerator {name}: {e}")
+        handler_duration = time.time() - handler_start_time
+        operator_logger.error(f"[CREATE] Error processing BareMetalHostGenerator {name} after {handler_duration:.2f}s: {e}", exc_info=True)
 
         # Update status using kopf's patch mechanism
         patch.status["phase"] = Phase.FAILED
@@ -311,7 +349,8 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
     - BMC Secret
     - BareMetalHost
     """
-    operator_logger.info(f"Processing deletion of BareMetalHost Generator: {name}")
+    handler_start_time = time.time()
+    operator_logger.info(f"[DELETE] Starting handler for BareMetalHost Generator: {name} in namespace: {namespace}")
 
     if status.get('bmhName') and status.get('bmhNamespace'):
         bmh_name = status['bmhName']
@@ -323,29 +362,46 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
             # Delete NMStateConfig if exists (Dell servers only)
             if server_vendor and server_vendor.upper() == 'DELL':
                 nmstate_config_name = bmh_name
-                OpenShiftUtils.delete_nmstate_config(custom_api, bmh_namespace, nmstate_config_name)
+                # Run blocking Kubernetes API call in thread pool
+                await asyncio.to_thread(
+                    OpenShiftUtils.delete_nmstate_config,
+                    custom_api, bmh_namespace, nmstate_config_name
+                )
                 operator_logger.info(
                     f"Deleted NMStateConfig: {nmstate_config_name} in namespace: {bmh_namespace}"
                 )
 
             # Delete BMC Secret
             bmc_secret_name = f"{server_vendor.lower()}-cred-{bmh_name}" if server_vendor else f"bmc-cred-{bmh_name}"
-            OpenShiftUtils.delete_bmc_secret(core_api, bmh_namespace, bmc_secret_name)
+            # Run blocking Kubernetes API call in thread pool
+            await asyncio.to_thread(
+                OpenShiftUtils.delete_bmc_secret,
+                core_api, bmh_namespace, bmc_secret_name
+            )
             operator_logger.info(
                 f"Deleted BMC Secret: {bmc_secret_name} in namespace: {bmh_namespace}"
             )
 
             # Delete BareMetalHost
-            OpenShiftUtils.delete_baremetalhost(custom_api, bmh_namespace, bmh_name)
+            # Run blocking Kubernetes API call in thread pool
+            await asyncio.to_thread(
+                OpenShiftUtils.delete_baremetalhost,
+                custom_api, bmh_namespace, bmh_name
+            )
             operator_logger.info(
                 f"Deleted BareMetalHost: {bmh_name} in namespace: {bmh_namespace}"
             )
 
+            handler_duration = time.time() - handler_start_time
+            operator_logger.info(f"[DELETE] Successfully completed deletion for: {name} (took {handler_duration:.2f}s)")
+
         except Exception as e:
-            operator_logger.error(f"Error deleting BareMetalHost and related resources: {str(e)}")
+            handler_duration = time.time() - handler_start_time
+            operator_logger.error(f"[DELETE] Error deleting BareMetalHost and related resources for {name} after {handler_duration:.2f}s: {str(e)}", exc_info=True)
             raise kopf.PermanentError(f"Error deleting BareMetalHost and related resources: {str(e)}")
     else:
-        operator_logger.warning(f"No associated BareMetalHost found for generator: {name}")
+        handler_duration = time.time() - handler_start_time
+        operator_logger.warning(f"[DELETE] No associated BareMetalHost found for generator: {name} (took {handler_duration:.2f}s)")
 
 
 @kopf.on.cleanup()

@@ -202,14 +202,23 @@ class BufferManager:
                 spec = bmhgen.get('spec', {})
                 try:
                     server_name = spec.get('serverName', name)
-                    mac_address, ipmi_address = unified_client.get_server_info(server_name, server_vendor)
+                    # Run blocking network call in thread pool
+                    loop = asyncio.get_event_loop()
+                    mac_address, ipmi_address = await loop.run_in_executor(
+                        None,
+                        lambda: unified_client.get_server_info(server_name, server_vendor)
+                    )
                     status_update = {
                         "macAddress": mac_address,
                         "ipmiAddress": ipmi_address
                     }
-                    OpenShiftUtils.update_bmh_status(
-                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-                        namespace, BMHGenCRD.PLURAL, name, status_update
+                    # Run blocking Kubernetes API call in thread pool
+                    await loop.run_in_executor(
+                        None,
+                        lambda: OpenShiftUtils.update_bmh_status(
+                            self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                            namespace, BMHGenCRD.PLURAL, name, status_update
+                        )
                     )
                 except Exception as e:
                     self.buffer_logger.error(f"Error getting server info for {name}: {str(e)}")
@@ -217,9 +226,14 @@ class BufferManager:
                         "phase": Phase.FAILED,
                         "message": "Cannot retrieve the server info"
                     }
-                    OpenShiftUtils.update_bmh_status(
-                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-                        namespace, BMHGenCRD.PLURAL, name, error_update
+                    # Run blocking Kubernetes API call in thread pool
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: OpenShiftUtils.update_bmh_status(
+                            self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                            namespace, BMHGenCRD.PLURAL, name, error_update
+                        )
                     )
                     return
 
@@ -253,9 +267,14 @@ class BufferManager:
                     "serverVendor": server_vendor,
                     "vlanId": vlan_id
                 }
-                OpenShiftUtils.update_bmh_status(
-                    self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-                    namespace, BMHGenCRD.PLURAL, name, completed_status
+                # Run blocking Kubernetes API call in thread pool
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: OpenShiftUtils.update_bmh_status(
+                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                        namespace, BMHGenCRD.PLURAL, name, completed_status
+                    )
                 )
                 self.buffer_logger.info(f"Updated generator {name} status to Completed (BMH already existed)")
                 return
@@ -273,7 +292,12 @@ class BufferManager:
                 namespace=target_namespace,
                 server_vendor=server_vendor
             )
-            OpenShiftUtils.create_bmc_secret(self.core_v1, target_namespace, bmc_secret, server_name)
+            # Run blocking Kubernetes API call in thread pool
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: OpenShiftUtils.create_bmc_secret(self.core_v1, target_namespace, bmc_secret, server_name)
+            )
 
             # Create BareMetalHost
             bmh = yaml_generator.generate_baremetal_host(
@@ -285,7 +309,11 @@ class BufferManager:
                 infra_env=infra_env,
                 labels=spec.get('labels', {})
             )
-            OpenShiftUtils.create_baremetalhost(self.custom_api, target_namespace, bmh, server_name)
+            # Run blocking Kubernetes API call in thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: OpenShiftUtils.create_baremetalhost(self.custom_api, target_namespace, bmh, server_name)
+            )
             self.buffer_logger.info(f"Created BareMetalHost: {name}")
 
             # Create NMStateConfig for Dell servers
@@ -297,7 +325,11 @@ class BufferManager:
                     infra_env=infra_env,
                     vlanId=vlan_id
                 )
-                OpenShiftUtils.create_nmstate_config(self.custom_api, target_namespace, nmstate_config, server_name)
+                # Run blocking Kubernetes API call in thread pool
+                await loop.run_in_executor(
+                    None,
+                    lambda: OpenShiftUtils.create_nmstate_config(self.custom_api, target_namespace, nmstate_config, server_name)
+                )
 
             # Update generator status to Completed
             completed_status = {
@@ -313,9 +345,13 @@ class BufferManager:
 
             # CRITICAL: Update status to Completed - this must succeed to prevent re-processing
             try:
-                OpenShiftUtils.update_bmh_status(
-                    self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-                    namespace, BMHGenCRD.PLURAL, name, completed_status
+                # Run blocking Kubernetes API call in thread pool
+                await loop.run_in_executor(
+                    None,
+                    lambda: OpenShiftUtils.update_bmh_status(
+                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                        namespace, BMHGenCRD.PLURAL, name, completed_status
+                    )
                 )
                 self.buffer_logger.info(f"Updated generator {name} status to Completed")
             except Exception as status_error:
@@ -330,9 +366,14 @@ class BufferManager:
                     "phase": Phase.FAILED,
                     "message": f"Error releasing from buffer: {str(e)}"
                 }
-                OpenShiftUtils.update_bmh_status(
-                    self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-                    namespace, BMHGenCRD.PLURAL, name, error_status
+                # Run blocking Kubernetes API call in thread pool
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: OpenShiftUtils.update_bmh_status(
+                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                        namespace, BMHGenCRD.PLURAL, name, error_status
+                    )
                 )
                 self.buffer_logger.info(f"Marked generator {name} as Failed to prevent retry loop")
             except Exception as final_error:
@@ -423,9 +464,14 @@ class BufferManager:
                         "serverVendor": server_vendor,
                         "vlanId": vlan_id
                     }
-                    OpenShiftUtils.update_bmh_status(
-                        self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
-                        namespace, BMHGenCRD.PLURAL, name, status_update
+                    # Run blocking Kubernetes API call in thread pool
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: OpenShiftUtils.update_bmh_status(
+                            self.custom_api, BMHGenCRD.GROUP, BMHGenCRD.VERSION,
+                            namespace, BMHGenCRD.PLURAL, name, status_update
+                        )
                     )
                     self.buffer_logger.info(f"Buffered server {server_name} - limit reached")
                 except Exception as e:
