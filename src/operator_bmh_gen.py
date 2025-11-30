@@ -51,16 +51,17 @@ async def configure(settings: kopf.OperatorSettings, **_):
     operator_logger.info("Starting operator configuration.")
 
     # Configure kopf settings
-    # Serial processing (1 worker) to prevent buffer race conditions
-    # This ensures strict enforcement of MAX_AVAILABLE_SERVERS limit
-    settings.execution.max_workers = 1  # Process CRs one at a time
+    # Moderate concurrency with non-blocking I/O to prevent event loop stalls
+    # Trade-off: Small buffer overage possible, but operator stays responsive
+    settings.execution.max_workers = 3  # Allow up to 3 concurrent handlers
     settings.execution.idle_timeout = 60.0  # Timeout for idle handlers
+    settings.execution.queue_workers_limit = 5  # Limit queue processing workers
 
     settings.posting.enabled = False
 
-    # Batching settings - single worker for strict serialization
-    settings.batching.worker_limit = 1  # Process one CR at a time to avoid buffer races
-    settings.batching.batch_window = 0.5  # Short batch window for responsiveness
+    # Batching settings - moderate concurrency
+    settings.batching.worker_limit = 3  # Allow up to 3 workers processing batches
+    settings.batching.batch_window = 1.0  # Wait up to 1 second to batch events
     settings.batching.idle_timeout = 5.0  # Timeout for idle batches
     
     # Watch settings - handle large numbers of resources
@@ -71,7 +72,7 @@ async def configure(settings: kopf.OperatorSettings, **_):
     settings.persistence.finalizer = BMHGenCRD.FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
 
-    operator_logger.info("Operator settings configured for serial processing with strict buffer control.")
+    operator_logger.info("Operator settings configured with moderate concurrency and non-blocking I/O.")
 
     # Test API access
     try:
@@ -216,18 +217,35 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         patch.status["message"] = f"infraEnv is required in the spec of BareMetalHostGenerator {name}"
         raise kopf.PermanentError(f"infraEnv is required in the spec of BareMetalHostGenerator {name}")
 
-    # Update status to Processing
+    # Validate unified_client before proceeding
+    if unified_client is None:
+        operator_logger.error("Unified client not initialized - cannot process server info")
+        patch.status["phase"] = Phase.FAILED
+        patch.status["message"] = "Operator not ready: Unified client not initialized"
+        raise kopf.PermanentError("Unified client not initialized")
+
+    # Update status to Processing - only after validation
     patch.status["phase"] = Phase.PROCESSING
     patch.status["message"] = f"Looking up server {server_name} in management systems."
 
     try:
         operator_logger.info(f"Searching for server info: {server_name}")
-        # Run blocking network call in thread pool to avoid blocking event loop
-        mac_address, ip_address = await asyncio.to_thread(
-            unified_client.get_server_info,
-            server_name,
-            server_vendor
-        )
+        # Run blocking network call in thread pool with timeout to avoid blocking event loop
+        # Timeout after 60 seconds to prevent hanging handlers
+        try:
+            mac_address, ip_address = await asyncio.wait_for(
+                asyncio.to_thread(
+                    unified_client.get_server_info,
+                    server_name,
+                    server_vendor
+                ),
+                timeout=60.0  # 60 second timeout
+            )
+        except asyncio.TimeoutError:
+            operator_logger.error(f"Timeout getting server info for {server_name} after 60 seconds")
+            patch.status["phase"] = Phase.FAILED
+            patch.status["message"] = f"Timeout getting server info for {server_name} - request took longer than 60 seconds"
+            raise kopf.PermanentError(f"Timeout getting server info for {server_name}")
 
         if not mac_address or not ip_address:
             # Update status before raising error
@@ -312,11 +330,14 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         handler_duration = time.time() - handler_start_time
         operator_logger.info(f"[CREATE] Successfully completed BareMetalHost creation for: {server_name} (took {handler_duration:.2f}s)")
 
+    except kopf.PermanentError:
+        # Re-raise PermanentError as-is (status already updated)
+        raise
     except Exception as e:
         handler_duration = time.time() - handler_start_time
         operator_logger.error(f"[CREATE] Error processing BareMetalHostGenerator {name} after {handler_duration:.2f}s: {e}", exc_info=True)
 
-        # Update status using kopf's patch mechanism
+        # Update status using kopf's patch mechanism - ensure it's marked as FAILED
         patch.status["phase"] = Phase.FAILED
         patch.status["message"] = str(e)
 
