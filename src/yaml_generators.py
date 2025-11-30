@@ -305,7 +305,7 @@ class YamlGenerator:
                             "ipv6": {
                                 "enabled": False
                             },
-                            "macAddress": macAddress,
+                            "mac-address": macAddress,
                             "name": f"{interface_name}",
                             "state": "up",
                             "type": "ethernet"
@@ -325,14 +325,14 @@ class YamlGenerator:
                             }
                         }
                     ]
-                }
-            },
-            "interfaces": [
-                {
-                    "macAddress": macAddress,
-                    "name": f"{interface_name}"
-                }
-            ]
+                },
+                "interfaces": [
+                    {
+                        "macAddress": macAddress,
+                        "name": f"{interface_name}"
+                    }
+                ]
+            }
         }
         self.validate_yaml_format(nmstate_data)
         self.bmh_logger.info(f"Successfully generated NMStateConfig definition for {name}")
