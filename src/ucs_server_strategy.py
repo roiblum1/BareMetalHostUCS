@@ -44,26 +44,35 @@ class CiscoServerStrategy(ServerStrategy):
     
     def ensure_connected(self) -> None:
         if not self._ucsc_handle:
-            logger.info(f"Connecting to UCS central at {self.credentials['central_ip']}")
+            central_ip = self.credentials.get('central_ip')
+            logger.info(f"Connecting to UCS Central at: {central_ip}")
+
+            if not central_ip:
+                raise ValueError("UCS_CENTRAL_IP is not configured")
+
             try:
                 from ucscsdk.ucschandle import UcscHandle
                 from ucsmsdk.ucshandle import UcsHandle
-                
+
+                logger.debug(f"Creating UcscHandle with IP={central_ip}, username={self.credentials.get('central_username')}")
+
                 self._ucsc_handle = UcscHandle(
-                    self.credentials['central_ip'],
+                    central_ip,
                     self.credentials['central_username'],
                     self.credentials['central_password']
                 )
-                
+
+                logger.info(f"Attempting login to UCS Central at {central_ip}...")
                 self._ucsc_handle.login()
                 self._UcsHandle = UcsHandle
-                
-                logger.info("Successfully connected to UCS central")
+
+                logger.info(f"Successfully connected to UCS Central at {central_ip}")
             except ImportError as e:
                 logger.error("UCS SDK is not installed. Please install ucscsdk and ucsmsdk packages.")
                 raise
             except Exception as e:
-                logger.error(f"Failed to connect to UCS central: {e}")
+                logger.error(f"Failed to connect to UCS Central at {central_ip}: {type(e).__name__}: {e}")
+                logger.exception("Full UCS connection error details:")
                 raise
         
     def get_server_info(self, server_name: str) -> Tuple[Optional[str], Optional[str]]:
@@ -75,31 +84,48 @@ class CiscoServerStrategy(ServerStrategy):
         for server in self._cache:
             if server.name.upper() == server_name.upper():
                 domain = server.domain
-                ucsm_handle = None 
-                
+                logger.info(f"Found server {server_name} in UCS Central, domain: {domain}")
+                ucsm_handle = None
+
                 try:
+                    logger.info(f"Connecting to UCS Manager at domain: {domain}")
                     ucsm_handle = self._UcsHandle(
                         domain,
                         self.credentials['manager_username'],
                         self.credentials['manager_password']
-                    ) 
+                    )
+
+                    logger.debug(f"Attempting login to UCS Manager at {domain}...")
                     ucsm_handle.login()
-                    
+                    logger.info(f"Successfully connected to UCS Manager at {domain}")
+
                     server_details = self._ucsc_handle.query_dn(server.dn)
                     if not server_details:
+                        logger.warning(f"Could not query server details for DN: {server.dn}")
                         continue
-                    
+
                     kvm_ip = self._extract_ucs_management_ip(ucsm_handle, server_details)
+                    logger.debug(f"Extracted KVM IP: {kvm_ip}")
 
                     mac_address = self._extract_ucs_mac_address(ucsm_handle, server_details)
+                    logger.debug(f"Extracted MAC address: {mac_address}")
 
                     if mac_address and kvm_ip:
+                        logger.info(f"Successfully retrieved server info for {server_name}: MAC={mac_address}, IP={kvm_ip}")
                         return mac_address, kvm_ip
-                    
+                    else:
+                        logger.warning(f"Incomplete server info for {server_name}: MAC={mac_address}, IP={kvm_ip}")
+
+                except Exception as e:
+                    logger.error(f"Error connecting to UCS Manager at {domain}: {type(e).__name__}: {e}")
+                    logger.exception("Full UCS Manager connection error:")
+                    # Continue to next server if multiple matches (shouldn't happen but be safe)
+
                 finally:
                     if ucsm_handle:
                         try:
                             ucsm_handle.logout()
+                            logger.debug(f"Logged out from UCS Manager at {domain}")
                         except Exception as e:
                             logger.warning(f"Error during UCS Manager logout: {e}")
         return None, None
