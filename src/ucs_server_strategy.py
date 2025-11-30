@@ -84,11 +84,28 @@ class CiscoServerStrategy(ServerStrategy):
         for server in self._cache:
             if server.name.upper() == server_name.upper():
                 domain = server.domain
-                logger.info(f"Found server {server_name} in UCS Central, domain: {domain}")
+                logger.info(f"Found server {server_name} in UCS Central, domain: '{domain}'")
+                logger.debug(f"Server DN: {server.dn}")
+
+                # Log server attributes for debugging
+                try:
+                    logger.debug(f"Server attributes: name={server.name}, dn={server.dn}, domain='{domain}', "
+                               f"pn_dn={getattr(server, 'pn_dn', 'N/A')}, type={getattr(server, 'type', 'N/A')}")
+                except Exception as e:
+                    logger.debug(f"Could not log all server attributes: {e}")
+
+                # Check if domain is empty or None
+                if not domain or domain.strip() == "":
+                    logger.error(f"Server {server_name} has EMPTY domain value in UCS Central")
+                    logger.error(f"Server DN: {server.dn}")
+                    logger.error(f"This server is not assigned to a UCS Manager domain or the domain value is not set")
+                    logger.error(f"Please check UCS Central configuration and ensure the server is assigned to a domain")
+                    return None, None
+
                 ucsm_handle = None
 
                 try:
-                    logger.info(f"Connecting to UCS Manager at domain: {domain}")
+                    logger.info(f"Connecting to UCS Manager at domain: '{domain}'")
                     ucsm_handle = self._UcsHandle(
                         domain,
                         self.credentials['manager_username'],
