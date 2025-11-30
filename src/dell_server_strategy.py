@@ -14,10 +14,11 @@ logger = dell_strategy_logger
 
 class DellServerStrategy(ServerStrategy):
     def __init__(self, credentials: Dict[str, str]):
-        self.credentials = credentials 
+        self.credentials = credentials
         self.base_url = f"https://{self.credentials.get('ip')}/api" if credentials.get('ip') else None
         self._session = None
         self._auth_token = None
+        self._session_id = None  # Store session ID for proper logout
         self._cache = None
     
     def is_configured(self) -> bool:
@@ -42,22 +43,42 @@ class DellServerStrategy(ServerStrategy):
     
     def ensure_connected(self) -> None:
         if not self._session or not self._auth_token:
-            logger.info(f"Connecting to Dell iDRAC at {self.base_url}")
+            logger.info(f"Connecting to Dell OME at {self.base_url}")
             self._session = requests.Session()
             self._session.verify = False
-            
+
             auth_url = f"{self.base_url}/SessionService/Sessions"
             auth_data = {
                 "UserName": self.credentials["username"],
                 "Password": self.credentials["password"],
                 "SessionType": "API"
             }
+
+            logger.debug(f"Creating session at {auth_url}")
             response = self._session.post(auth_url, json=auth_data)
             response.raise_for_status()
-            
+
+            # Extract auth token from header
             self._auth_token = response.headers.get("X-Auth-Token")
+            if not self._auth_token:
+                raise ValueError("Dell OME did not return X-Auth-Token header")
+
+            # Extract session ID from response body or Location header
+            response_data = response.json()
+            self._session_id = response_data.get("Id")
+
+            # Fallback: extract from Location header if not in body
+            if not self._session_id:
+                location = response.headers.get("Location", "")
+                if "Sessions(" in location:
+                    # Extract ID from URL like: /api/SessionService/Sessions('12345')
+                    self._session_id = location.split("Sessions(")[1].rstrip(")'")
+
+            if not self._session_id:
+                logger.warning("Could not extract session ID - logout may not work properly")
+
             self._session.headers.update({"X-Auth-Token": self._auth_token})
-            logger.info("Successfully connected to Dell iDRAC")
+            logger.info(f"Successfully connected to Dell OME (Session ID: {self._session_id})")
     
     def get_server_info(self, server_name: str) -> Tuple[Optional[str], Optional[str]]:
         self.ensure_connected()
@@ -198,12 +219,29 @@ class DellServerStrategy(ServerStrategy):
     def disconnect(self):
         if self._session and self._auth_token:
             try:
-                logout_url = f"{self.base_url}/SessionService/Sessions"
-                response = self._session.delete(logout_url)
-                self._session.close()
-                logger.info("Successfully disconnected from Dell iDRAC")
+                # Delete the specific session using its ID
+                if self._session_id:
+                    logout_url = f"{self.base_url}/SessionService/Sessions('{self._session_id}')"
+                    logger.debug(f"Deleting session at: {logout_url}")
+                    response = self._session.delete(logout_url)
+                    response.raise_for_status()
+                    logger.info(f"Successfully deleted Dell OME session {self._session_id}")
+                else:
+                    logger.warning("No session ID available - cannot delete session properly")
+                    logger.warning("Session may remain active on Dell OME until timeout")
+
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    logger.info(f"Session {self._session_id} already deleted or expired")
+                else:
+                    logger.error(f"HTTP error during Dell OME logout: {e.response.status_code} - {e.response.text}")
             except Exception as e:
-                logger.warning(f"Error during Dell iDRAC logout: {e}")
+                logger.error(f"Error during Dell OME logout: {type(e).__name__}: {e}")
             finally:
+                # Always close the session and clear credentials
+                if self._session:
+                    self._session.close()
                 self._session = None
                 self._auth_token = None
+                self._session_id = None
+                logger.debug("Dell OME session cleaned up")
