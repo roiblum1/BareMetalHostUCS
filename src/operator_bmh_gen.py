@@ -51,16 +51,15 @@ async def configure(settings: kopf.OperatorSettings, **_):
     operator_logger.info("Starting operator configuration.")
 
     # Configure kopf settings
-    # Moderate concurrency with non-blocking I/O to prevent event loop stalls
-    # Trade-off: Small buffer overage possible, but operator stays responsive
-    settings.execution.max_workers = 3  # Allow up to 3 concurrent handlers
+    # Serial processing (1 worker) for maximum stability and strict buffer control
+    # This prevents race conditions and ensures the operator stays responsive
+    settings.execution.max_workers = 1  # Process one handler at a time
     settings.execution.idle_timeout = 60  # Timeout for idle handlers (seconds)
-    settings.execution.queue_workers_limit = 5  # Limit queue processing workers
 
     settings.posting.enabled = False
 
-    # Batching settings - moderate concurrency
-    settings.batching.worker_limit = 3  # Allow up to 3 workers processing batches
+    # Batching settings - single worker for strict serialization
+    settings.batching.worker_limit = 1  # Process one resource at a time
     settings.batching.batch_window = 1  # Wait up to 1 second to batch events
     settings.batching.idle_timeout = 5  # Timeout for idle batches (seconds)
 
@@ -72,7 +71,7 @@ async def configure(settings: kopf.OperatorSettings, **_):
     settings.persistence.finalizer = BMHGenCRD.FINALIZER
     settings.persistence.progress_storage = kopf.AnnotationsProgressStorage()
 
-    operator_logger.info("Operator settings configured with moderate concurrency and non-blocking I/O.")
+    operator_logger.info("Operator settings configured for serial processing with asyncio.to_thread() for non-blocking I/O.")
 
     # Test API access
     try:
