@@ -167,38 +167,10 @@ class DellServerStrategy(ServerStrategy):
                 logger.info(f"Network interfaces found: {len(network_interfaces)} for device {device_id}")
 
                 if network_interfaces:
-                    try:
-                        if "data" in server_name:
-                            logger.info(f"Using 'data' server logic for {server_name}")
-                            last_network_interface = network_interfaces[-1]
-                            last_port = last_network_interface.get("Ports", [])[-1]
-                            partitions = last_port.get("Partitions", [])[-1]
-                            mac_address = partitions.get("CurrentMacAddress")
-                            logger.info(f"MAC address found for server {server_name}: {mac_address}")
-                            return mac_address
-
-                        first_interface = network_interfaces[0]
-                        logger.info(f"First interface: {first_interface}")
-                        ports = first_interface.get("Ports", [])
-                        logger.info(f"Ports found: {len(ports)} ports")
-
-                        if ports:
-                            first_port = ports[0]
-                            partitions = first_port.get("Partitions", [])
-                            logger.info(f"Partitions found: {len(partitions)} partitions")
-
-                            if partitions:
-                                first_partition = partitions[0]
-                                mac_address = first_partition.get("CurrentMacAddress")
-                                logger.info(f"MAC address found for server {server_name}: {mac_address}")
-                                return mac_address
-                            else:
-                                logger.error(f"No partitions found in first port for device {device_id}")
-                        else:
-                            logger.error(f"No ports found in first interface for device {device_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to extract MAC from inventory for device {device_id}: {e}")
-                        return None
+                    mac_address = self._extract_mac_by_server_type(network_interfaces, server_name, device_id)
+                    if mac_address:
+                        logger.info(f"MAC address found for server {server_name}: {mac_address}")
+                        return mac_address
 
                 logger.error(f"No network interfaces or failed to extract MAC for device {device_id}")
                 return None
@@ -211,7 +183,91 @@ class DellServerStrategy(ServerStrategy):
             skip += top
             logger.debug(f"No match found in this batch, fetching next {top} devices...")
 
-        return None 
+        return None
+
+    def _extract_mac_by_server_type(self, network_interfaces: list, server_name: str, device_id: int) -> Optional[str]:
+        """
+        Extract MAC address based on server type.
+
+        Server types:
+        - H100/H200: Uses 3rd network interface (index 2)
+        - Data servers: Uses last interface, last port, last partition
+        - Default: Uses first interface, first port, first partition
+
+        Args:
+            network_interfaces: List of network interfaces from Dell OME
+            server_name: Name of the server (used for type detection)
+            device_id: Device ID for logging
+
+        Returns:
+            MAC address string or None if extraction fails
+        """
+        server_name_lower = server_name.lower()
+
+        try:
+            # H100/H200 servers: use 3rd NIC (index 2)
+            if "h100" in server_name_lower or "h200" in server_name_lower:
+                logger.info(f"Detected H100/H200 server: {server_name}, using 3rd network interface")
+
+                if len(network_interfaces) < 3:
+                    logger.error(f"H100/H200 server {server_name} has only {len(network_interfaces)} interfaces, expected at least 3")
+                    return None
+
+                third_interface = network_interfaces[2]
+                ports = third_interface.get("Ports", [])
+                logger.info(f"H100/H200: Found {len(ports)} ports in 3rd interface")
+
+                if not ports:
+                    logger.error(f"No ports found in 3rd interface for H100/H200 device {device_id}")
+                    return None
+
+                first_port = ports[0]
+                partitions = first_port.get("Partitions", [])
+                logger.info(f"H100/H200: Found {len(partitions)} partitions in first port")
+
+                if not partitions:
+                    logger.error(f"No partitions found in first port of 3rd interface for H100/H200 device {device_id}")
+                    return None
+
+                first_partition = partitions[0]
+                mac_address = first_partition.get("CurrentMacAddress")
+                return mac_address
+
+            # Data servers: use last interface, last port, last partition
+            elif "data" in server_name_lower:
+                logger.info(f"Using 'data' server logic for {server_name}")
+                last_network_interface = network_interfaces[-1]
+                last_port = last_network_interface.get("Ports", [])[-1]
+                partitions = last_port.get("Partitions", [])[-1]
+                mac_address = partitions.get("CurrentMacAddress")
+                return mac_address
+
+            # Default: use first interface, first port, first partition
+            else:
+                first_interface = network_interfaces[0]
+                logger.info(f"Using default logic - First interface: {first_interface}")
+                ports = first_interface.get("Ports", [])
+                logger.info(f"Ports found: {len(ports)} ports")
+
+                if not ports:
+                    logger.error(f"No ports found in first interface for device {device_id}")
+                    return None
+
+                first_port = ports[0]
+                partitions = first_port.get("Partitions", [])
+                logger.info(f"Partitions found: {len(partitions)} partitions")
+
+                if not partitions:
+                    logger.error(f"No partitions found in first port for device {device_id}")
+                    return None
+
+                first_partition = partitions[0]
+                mac_address = first_partition.get("CurrentMacAddress")
+                return mac_address
+
+        except Exception as e:
+            logger.error(f"Failed to extract MAC from inventory for device {device_id}: {e}")
+            return None 
     def clear_cache(self):
         """Clear any cached data."""
         self._cache = None

@@ -100,8 +100,39 @@ def get_secret_name(vendor: str, server_name: str) -> str:
 
 class YamlGenerator:
     def __init__(self):
-        self.bmh_logger = bmh_logger 
-    
+        self.bmh_logger = bmh_logger
+
+    def _get_interface_name(self, server_name: str) -> str:
+        """
+        Determine the network interface name based on server type.
+
+        Server types:
+        - H100 servers: ens8f0np0
+        - H200 servers: ens33f0np0
+        - Data servers: ens2f0np0
+        - Default: eno12399np0
+
+        Args:
+            server_name: Name of the server
+
+        Returns:
+            Interface name string
+        """
+        server_name_lower = server_name.lower()
+
+        if "h100" in server_name_lower:
+            self.bmh_logger.info(f"Detected H100 server: {server_name}, using interface ens8f0np0")
+            return "ens8f0np0"
+        elif "h200" in server_name_lower:
+            self.bmh_logger.info(f"Detected H200 server: {server_name}, using interface ens33f0np0")
+            return "ens33f0np0"
+        elif "data" in server_name_lower:
+            self.bmh_logger.info(f"Detected data server: {server_name}, using interface ens2f0np0")
+            return "ens2f0np0"
+        else:
+            self.bmh_logger.info(f"Using default interface eno12399np0 for server: {server_name}")
+            return "eno12399np0"
+
     def validate_inputs(self, mac: str, ip: str) -> None:
         """Validate MAC and IP address formats"""
         self.bmh_logger.debug(f"Validating inputs - MAC: {mac}, IP: {ip}")
@@ -280,10 +311,8 @@ class YamlGenerator:
         except ValueError as e:
             raise ValueError(f"VLAN ID must be a valid integer, got: {vlanId}") from e
 
-        if "data" in name:
-            interface_name = "ens2f0np0"
-        else:
-            interface_name = "eno12399np0"
+        # Determine interface name based on server type
+        interface_name = self._get_interface_name(name)
         self.bmh_logger.info(f"Configuring the nmstateconfig with {interface_name}.{vlan_id_int}")
         nmstate_data = {
             "apiVersion": f"{NMStateConfigCRD.GROUP}/{NMStateConfigCRD.VERSION}",
