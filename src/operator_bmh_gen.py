@@ -364,13 +364,23 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
     """
     Handler for deleting BareMetalHostGenerator CRDs.
 
-    This handler cleans up associated resources:
+    This handler cleans up associated resources based on DELETE_RESOURCES_ON_DELETE configuration:
     - NMStateConfig (for Dell servers)
     - BMC Secret
     - BareMetalHost
+
+    If DELETE_RESOURCES_ON_DELETE is false, resources are preserved.
     """
     handler_start_time = time.time()
     operator_logger.info(f"[DELETE] Starting handler for BareMetalHost Generator: {name} in namespace: {namespace}")
+
+    from src.config import DELETE_RESOURCES_ON_DELETE
+
+    if not DELETE_RESOURCES_ON_DELETE:
+        operator_logger.info(f"[DELETE] DELETE_RESOURCES_ON_DELETE is disabled - preserving resources for: {name}")
+        handler_duration = time.time() - handler_start_time
+        operator_logger.info(f"[DELETE] Completed (resources preserved) for: {name} (took {handler_duration:.2f}s)")
+        return
 
     if status.get('bmhName') and status.get('bmhNamespace'):
         bmh_name = status['bmhName']

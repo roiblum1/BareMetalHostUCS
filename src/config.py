@@ -79,6 +79,19 @@ BUFFER_CHECK_INTERVAL = int(os.getenv('BUFFER_CHECK_INTERVAL', '30'))
 
 
 # ============================================================================
+# Resource Deletion Configuration
+# ============================================================================
+
+def str_to_bool(value: str) -> bool:
+    """Convert string environment variable to boolean."""
+    return value.lower() in ('true', '1', 'yes', 'on')
+
+# Control whether to delete all resources (BMH, Secret, NMStateConfig) when BareMetalHostGenerator is deleted
+# Set to 'false' to preserve resources after BareMetalHostGenerator deletion
+DELETE_RESOURCES_ON_DELETE = str_to_bool(os.getenv('DELETE_RESOURCES_ON_DELETE', 'true'))
+
+
+# ============================================================================
 # Kubernetes CRD Constants
 # ============================================================================
 
