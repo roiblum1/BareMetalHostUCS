@@ -59,6 +59,10 @@ spec:
         - name: BUFFER_CHECK_INTERVAL
           value: {{ .Values.operator.bufferCheckInterval | quote }}
 
+        # Resource deletion configuration
+        - name: DELETE_RESOURCES_ON_DELETE
+          value: {{ .Values.operator.deleteResourcesOnDelete | quote }}
+
         {{- if .Values.hpOneView.enabled }}
         # HP OneView configuration
         - name: ONEVIEW_IP

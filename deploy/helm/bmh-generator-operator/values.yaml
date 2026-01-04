@@ -15,6 +15,10 @@ operator:
   # Buffer management
   maxAvailableServers: 20
   bufferCheckInterval: 30 # seconds
+  # Resource deletion control
+  # When true, deletes BMH, Secret, and NMStateConfig when BareMetalHostGenerator is deleted
+  # When false, preserves resources for debugging or manual cleanup
+  deleteResourcesOnDelete: true
   # Number of replica pods
   replicas: 1
   # Namespace to deploy operator (defaults to release namespace)
