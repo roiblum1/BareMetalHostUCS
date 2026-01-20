@@ -352,11 +352,237 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
 
 
 @kopf.on.update(BMHGenCRD.GROUP, BMHGenCRD.VERSION, BMHGenCRD.PLURAL)
-async def update_bmh(spec, status, name, **kwargs):
-    """Handler for updates to BareMetalHostGenerator - currently ignored as resource is immutable"""
-    operator_logger.info(f"BareMetalHostGenerator {name} update ignored - resource is immutable.")
-    operator_logger.debug(f"Current status: {status}")
+async def update_bmh(spec, status, name, namespace, annotations, patch, **kwargs):
+    """
+    Handler for updates to BareMetalHostGenerator.
+
+    Supports redeploy annotation: Set redeploy="true" to trigger recreation of resources.
+    Redeploy only works for resources in "Completed" or "Failed" phase.
+    """
+    operator_logger.info(f"[UPDATE] BareMetalHostGenerator {name} update triggered")
+
+    # Check for redeploy annotation
+    if annotations and annotations.get('redeploy') == 'true':
+        operator_logger.info(f"[UPDATE] Redeploy annotation detected for: {name}")
+
+        # Validate phase
+        current_phase = status.get('phase')
+        if current_phase not in [Phase.COMPLETED, Phase.FAILED]:
+            operator_logger.warning(
+                f"[UPDATE] Redeploy requested for {name} but phase is '{current_phase}'. "
+                f"Redeploy only works for Completed or Failed phases."
+            )
+            return status
+
+        # Execute redeploy logic
+        operator_logger.info(f"[UPDATE] Starting redeploy for {name} (current phase: {current_phase})")
+        await redeploy_bmh_resources(spec, status, name, namespace, annotations, patch)
+    else:
+        operator_logger.debug(f"[UPDATE] BareMetalHostGenerator {name} update ignored - no redeploy annotation")
+
+    operator_logger.debug(f"[UPDATE] Current status: {status}")
     return status
+
+
+# ============================================================================
+# Redeploy Helper Functions
+# ============================================================================
+
+async def redeploy_bmh_resources(spec, status, name, namespace, annotations, patch):
+    """
+    Redeploy BareMetalHost and related resources.
+
+    Steps:
+    1. Delete existing resources (BMH, Secret, NMStateConfig)
+    2. Re-query server info from management system
+    3. Recreate resources
+    4. Remove redeploy annotation
+    5. Update status
+    """
+    handler_start_time = time.time()
+    operator_logger.info(f"[REDEPLOY] Starting redeploy for: {name} in namespace: {namespace}")
+
+    try:
+        # Update status to Processing
+        patch.status["phase"] = Phase.PROCESSING
+        patch.status["message"] = "Redeploying resources..."
+
+        # Step 1: Delete existing resources
+        operator_logger.info(f"[REDEPLOY] Deleting existing resources for: {name}")
+        await delete_existing_resources(status, name, namespace)
+
+        # Step 2: Re-query server info from management system
+        server_name = spec.get('serverName', name)
+        server_vendor = annotations.get('server_vendor') if annotations else None
+
+        operator_logger.info(f"[REDEPLOY] Querying server info for: {server_name}")
+
+        # Use unified client to get fresh server info
+        with get_unified_connection() as unified_client:
+            mac_address, ipmi_address = unified_client.get_server_info(server_name, server_vendor)
+
+        if not mac_address or not ipmi_address:
+            raise kopf.PermanentError(f"Failed to retrieve server info for {server_name}")
+
+        operator_logger.info(f"[REDEPLOY] Retrieved server info - MAC: {mac_address}, IP: {ipmi_address}")
+
+        # Step 3: Recreate resources
+        operator_logger.info(f"[REDEPLOY] Creating new resources for: {name}")
+        await create_bmh_resources(spec, name, namespace, mac_address, ipmi_address,
+                                   server_vendor, annotations, patch)
+
+        # Step 4: Remove redeploy annotation
+        operator_logger.info(f"[REDEPLOY] Removing redeploy annotation from: {name}")
+        await remove_redeploy_annotation(name, namespace)
+
+        # Step 5: Update status to Completed
+        patch.status["phase"] = Phase.COMPLETED
+        patch.status["message"] = "Resources successfully redeployed"
+
+        handler_duration = time.time() - handler_start_time
+        operator_logger.info(f"[REDEPLOY] Successfully completed redeploy for: {name} (took {handler_duration:.2f}s)")
+
+    except Exception as e:
+        handler_duration = time.time() - handler_start_time
+        operator_logger.error(f"[REDEPLOY] Error during redeploy for {name} after {handler_duration:.2f}s: {e}", exc_info=True)
+
+        # Remove annotation even on failure to prevent retries
+        try:
+            await remove_redeploy_annotation(name, namespace)
+        except Exception as remove_error:
+            operator_logger.error(f"[REDEPLOY] Failed to remove annotation after error: {remove_error}")
+
+        # Update status to Failed
+        patch.status["phase"] = Phase.FAILED
+        patch.status["message"] = f"Redeploy failed: {str(e)}"
+
+        raise kopf.PermanentError(f"Redeploy failed: {str(e)}")
+
+
+async def delete_existing_resources(status, name, namespace):
+    """
+    Delete BMH, Secret, and NMStateConfig if they exist.
+
+    Note: NMStateConfig is only deleted for Dell servers (DELL vendor)
+    """
+    bmh_name = status.get('bmhName')
+    bmh_namespace = status.get('bmhNamespace')
+    server_vendor = status.get('serverVendor')
+
+    if not bmh_name or not bmh_namespace:
+        operator_logger.warning(f"[REDEPLOY] No existing resources found in status for {name}")
+        return
+
+    operator_logger.info(f"[REDEPLOY] Deleting resources: BMH={bmh_name}, Namespace={bmh_namespace}, Vendor={server_vendor}")
+
+    # Delete NMStateConfig (Dell servers only - other vendors don't use it)
+    if server_vendor and server_vendor.upper() == 'DELL':
+        await asyncio.to_thread(
+            OpenShiftUtils.delete_nmstate_config,
+            custom_api, bmh_namespace, bmh_name
+        )
+        operator_logger.info(f"[REDEPLOY] Deleted NMStateConfig: {bmh_name} (Dell server)")
+    else:
+        operator_logger.debug(f"[REDEPLOY] Skipping NMStateConfig deletion for {server_vendor} server")
+
+    # Delete Secret (all vendors)
+    secret_name = f"{server_vendor.lower()}-cred-{bmh_name}" if server_vendor else f"bmc-cred-{bmh_name}"
+    await asyncio.to_thread(
+        OpenShiftUtils.delete_bmc_secret,
+        core_api, bmh_namespace, secret_name
+    )
+    operator_logger.info(f"[REDEPLOY] Deleted Secret: {secret_name}")
+
+    # Delete BMH (all vendors)
+    await asyncio.to_thread(
+        OpenShiftUtils.delete_baremetalhost,
+        custom_api, bmh_namespace, bmh_name
+    )
+    operator_logger.info(f"[REDEPLOY] Deleted BareMetalHost: {bmh_name}")
+
+
+async def remove_redeploy_annotation(name, namespace):
+    """Remove the redeploy annotation from BMHGen to prevent infinite loops"""
+    try:
+        # Get current resource
+        bmhgen = await asyncio.to_thread(
+            lambda: custom_api.get_namespaced_custom_object(
+                BMHGenCRD.GROUP, BMHGenCRD.VERSION, namespace, BMHGenCRD.PLURAL, name
+            )
+        )
+
+        # Remove annotation
+        annotations = bmhgen.get('metadata', {}).get('annotations', {})
+        if 'redeploy' in annotations:
+            del annotations['redeploy']
+
+            # Patch the resource
+            patch_body = {
+                "metadata": {
+                    "annotations": annotations
+                }
+            }
+
+            await asyncio.to_thread(
+                lambda: custom_api.patch_namespaced_custom_object(
+                    BMHGenCRD.GROUP, BMHGenCRD.VERSION, namespace, BMHGenCRD.PLURAL,
+                    name, patch_body
+                )
+            )
+            operator_logger.info(f"[REDEPLOY] Removed redeploy annotation from {name}")
+        else:
+            operator_logger.debug(f"[REDEPLOY] No redeploy annotation found on {name}")
+    except Exception as e:
+        operator_logger.error(f"[REDEPLOY] Failed to remove redeploy annotation from {name}: {e}")
+        # Don't raise - this is a cleanup operation
+
+
+async def create_bmh_resources(spec, name, namespace, mac_address, ipmi_address,
+                               server_vendor, annotations, patch):
+    """
+    Create BMH, Secret, and NMStateConfig resources.
+
+    Note: NMStateConfig is only created for Dell servers with vlanId annotation
+    """
+    target_namespace = spec.get('namespace', namespace)
+    infra_env = spec.get('infraEnv')
+    labels = spec.get('labels', {})
+    vlan_id = annotations.get('vlanId') if annotations else None
+
+    operator_logger.info(f"[REDEPLOY] Creating resources in namespace: {target_namespace}")
+
+    # Generate and create Secret
+    yaml_generator = YamlGenerator()
+    bmc_secret = yaml_generator.generate_bmc_secret(name, target_namespace, server_vendor)
+    await asyncio.to_thread(OpenShiftUtils.create_bmc_secret, core_api, bmc_secret)
+    operator_logger.info(f"[REDEPLOY] Created BMC Secret for {name}")
+
+    # Generate and create BMH
+    bmh_data = yaml_generator.generate_baremetal_host(
+        name, target_namespace, server_vendor, mac_address, ipmi_address, infra_env, labels
+    )
+    await asyncio.to_thread(OpenShiftUtils.create_baremetalhost, custom_api, bmh_data)
+    operator_logger.info(f"[REDEPLOY] Created BareMetalHost: {name}")
+
+    # Generate and create NMStateConfig (Dell servers only with VLAN ID)
+    if server_vendor and server_vendor.upper() == "DELL" and vlan_id:
+        operator_logger.info(f"[REDEPLOY] Creating NMStateConfig for Dell server {name} with VLAN {vlan_id}")
+        nmstate_data = yaml_generator.generate_nmstate_config(
+            name, target_namespace, mac_address, infra_env, vlan_id
+        )
+        await asyncio.to_thread(OpenShiftUtils.create_nmstate_config, custom_api, nmstate_data)
+        operator_logger.info(f"[REDEPLOY] Created NMStateConfig for {name}")
+    else:
+        operator_logger.debug(f"[REDEPLOY] Skipping NMStateConfig creation for {server_vendor} server")
+
+    # Update status with resource info
+    patch.status["bmhName"] = name
+    patch.status["bmhNamespace"] = target_namespace
+    patch.status["macAddress"] = mac_address
+    patch.status["ipmiAddress"] = ipmi_address
+    patch.status["serverVendor"] = server_vendor
+    if vlan_id:
+        patch.status["vlanId"] = vlan_id
 
 
 @kopf.on.delete(BMHGenCRD.GROUP, BMHGenCRD.VERSION, BMHGenCRD.PLURAL)
