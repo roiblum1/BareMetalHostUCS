@@ -417,9 +417,14 @@ async def redeploy_bmh_resources(spec, status, name, namespace, annotations, pat
 
         operator_logger.info(f"[REDEPLOY] Querying server info for: {server_name}")
 
-        # Use unified client to get fresh server info
-        with get_unified_connection() as unified_client:
-            mac_address, ipmi_address = unified_client.get_server_info(server_name, server_vendor)
+        # Check if unified_client is available
+        if unified_client is None:
+            raise kopf.PermanentError("Unified client not initialized - cannot query server info")
+
+        # Use global unified client to get fresh server info (run in thread to avoid blocking)
+        mac_address, ipmi_address = await asyncio.to_thread(
+            unified_client.get_server_info, server_name, server_vendor
+        )
 
         if not mac_address or not ipmi_address:
             raise kopf.PermanentError(f"Failed to retrieve server info for {server_name}")
@@ -502,36 +507,30 @@ async def delete_existing_resources(status, name, namespace):
 
 
 async def remove_redeploy_annotation(name, namespace):
-    """Remove the redeploy annotation from BMHGen to prevent infinite loops"""
+    """Remove the redeploy annotation from BMHGen to prevent infinite loops.
+
+    Uses JSON merge patch with null value to actually delete the annotation.
+    Simply omitting a key from a patch body doesn't remove it - we must
+    explicitly set it to None (null in JSON) to delete it.
+    """
     try:
-        # Get current resource
-        bmhgen = await asyncio.to_thread(
-            lambda: custom_api.get_namespaced_custom_object(
-                BMHGenCRD.GROUP, BMHGenCRD.VERSION, namespace, BMHGenCRD.PLURAL, name
-            )
-        )
-
-        # Remove annotation
-        annotations = bmhgen.get('metadata', {}).get('annotations', {})
-        if 'redeploy' in annotations:
-            del annotations['redeploy']
-
-            # Patch the resource
-            patch_body = {
-                "metadata": {
-                    "annotations": annotations
+        # To remove an annotation with JSON merge patch, set it to None (null)
+        # This tells Kubernetes to delete this specific annotation key
+        patch_body = {
+            "metadata": {
+                "annotations": {
+                    "redeploy": None  # Setting to None removes the annotation
                 }
             }
+        }
 
-            await asyncio.to_thread(
-                lambda: custom_api.patch_namespaced_custom_object(
-                    BMHGenCRD.GROUP, BMHGenCRD.VERSION, namespace, BMHGenCRD.PLURAL,
-                    name, patch_body
-                )
+        await asyncio.to_thread(
+            lambda: custom_api.patch_namespaced_custom_object(
+                BMHGenCRD.GROUP, BMHGenCRD.VERSION, namespace, BMHGenCRD.PLURAL,
+                name, patch_body
             )
-            operator_logger.info(f"[REDEPLOY] Removed redeploy annotation from {name}")
-        else:
-            operator_logger.debug(f"[REDEPLOY] No redeploy annotation found on {name}")
+        )
+        operator_logger.info(f"[REDEPLOY] Removed redeploy annotation from {name}")
     except Exception as e:
         operator_logger.error(f"[REDEPLOY] Failed to remove redeploy annotation from {name}: {e}")
         # Don't raise - this is a cleanup operation
