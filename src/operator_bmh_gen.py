@@ -563,14 +563,18 @@ async def create_bmh_resources(spec, name, namespace, mac_address, ipmi_address,
     # Generate and create Secret
     yaml_generator = YamlGenerator()
     bmc_secret = yaml_generator.generate_bmc_secret(name, target_namespace, server_vendor)
-    await asyncio.to_thread(OpenShiftUtils.create_bmc_secret, core_api, bmc_secret)
+    await asyncio.to_thread(
+        OpenShiftUtils.create_bmc_secret, core_api, target_namespace, bmc_secret, name
+    )
     operator_logger.info(f"[REDEPLOY] Created BMC Secret for {name}")
 
     # Generate and create BMH
     bmh_data = yaml_generator.generate_baremetal_host(
         name, target_namespace, server_vendor, mac_address, ipmi_address, infra_env, labels
     )
-    await asyncio.to_thread(OpenShiftUtils.create_baremetalhost, custom_api, bmh_data)
+    await asyncio.to_thread(
+        OpenShiftUtils.create_baremetalhost, custom_api, target_namespace, bmh_data, name
+    )
     operator_logger.info(f"[REDEPLOY] Created BareMetalHost: {name}")
 
     # Generate and create NMStateConfig (Dell servers only with VLAN ID)
@@ -579,7 +583,9 @@ async def create_bmh_resources(spec, name, namespace, mac_address, ipmi_address,
         nmstate_data = yaml_generator.generate_nmstate_config(
             name, target_namespace, mac_address, infra_env, vlan_id
         )
-        await asyncio.to_thread(OpenShiftUtils.create_nmstate_config, custom_api, nmstate_data)
+        await asyncio.to_thread(
+            OpenShiftUtils.create_nmstate_config, custom_api, target_namespace, nmstate_data, name
+        )
         operator_logger.info(f"[REDEPLOY] Created NMStateConfig for {name}")
     else:
         operator_logger.debug(f"[REDEPLOY] Skipping NMStateConfig creation for {server_vendor} server")
