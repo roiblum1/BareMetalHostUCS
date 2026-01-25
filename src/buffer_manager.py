@@ -405,11 +405,12 @@ class BufferManager:
 
             self.buffer_logger.info(f"Available BareMetalHosts: {stats['available_count']}/{self.MAX_AVAILABLE_SERVERS}")
 
+            # Always query buffered generators for accurate reporting
+            buffered = await self.get_buffered_generators()
+            stats["buffered_count"] = len(buffered)
+
             if stats["available_count"] < self.MAX_AVAILABLE_SERVERS:
                 slots_available = self.MAX_AVAILABLE_SERVERS - stats["available_count"]
-
-                buffered = await self.get_buffered_generators()
-                stats["buffered_count"] = len(buffered)
 
                 for i, bmhgen in enumerate(buffered[:slots_available]):
                     gen_name = bmhgen['metadata']['name']
@@ -427,7 +428,7 @@ class BufferManager:
                     if i < slots_available - 1:
                         await asyncio.sleep(2)
             else:
-                self.buffer_logger.info("No slots available to release servers from buffer")
+                self.buffer_logger.info(f"No slots available to release servers from buffer (buffered={stats['buffered_count']})")
 
         return stats
 
