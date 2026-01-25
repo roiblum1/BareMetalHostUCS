@@ -2,6 +2,7 @@ import asyncio
 import os
 import subprocess
 import time
+from datetime import datetime
 from typing import Any, Dict, Optional
 import logging
 import kopf
@@ -269,7 +270,16 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
             namespace,
             name
         ):
-            # Server was buffered, status was updated by is_to_buffer
+            # Server was buffered - MUST update patch.status to prevent Kopf from
+            # overwriting the "Buffered" status with "Processing" when handler returns
+            patch.status["phase"] = Phase.BUFFERED
+            patch.status["message"] = f"Server buffered - limit reached ({buffer_manager.MAX_AVAILABLE_SERVERS} available)"
+            patch.status["bufferedAt"] = datetime.utcnow().isoformat() + "Z"
+            patch.status["macAddress"] = mac_address
+            patch.status["ipmiAddress"] = ip_address
+            patch.status["serverVendor"] = server_vendor
+            if vlan_id:
+                patch.status["vlanId"] = vlan_id
             return
 
         # Create resources immediately
