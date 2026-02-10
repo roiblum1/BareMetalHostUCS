@@ -39,12 +39,8 @@ operator_logger.info("Kubernetes client initialized.")
 buffer_manager = BufferManager(custom_api, core_api)
 unified_client: Optional[UnifiedServerClient] = None
 
-# Background tasks (created in startup)
+# Background task for buffer checking (created in startup)
 _buffer_check_task: Optional[asyncio.Task] = None
-
-# Track watch events for observability
-_watch_event_count = 0
-_last_watch_event_time: Optional[datetime] = None
 
 # Disable SSL warnings
 disable_warnings(InsecureRequestWarning)
@@ -175,16 +171,8 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     3. Creates BMC Secret, BareMetalHost, and optionally NMStateConfig
     4. Updates the generator status
     """
-    # Track watch event
-    global _watch_event_count, _last_watch_event_time
-    _watch_event_count += 1
-    _last_watch_event_time = datetime.utcnow()
-
     handler_start_time = time.time()
-    operator_logger.info(
-        f"[CREATE] ✓ WATCH EVENT #{_watch_event_count}: {namespace}/{name} "
-        f"(Kopf is detecting new BMHGen CRs)"
-    )
+    operator_logger.info(f"[CREATE] Starting handler for BareMetalHostGenerator: {name} in namespace: {namespace}")
 
     # Get or default serverName
     server_name = spec.get('serverName', name)
@@ -381,12 +369,7 @@ async def update_bmh(spec, status, name, namespace, annotations, patch, **kwargs
     Supports redeploy annotation: Set redeploy="true" to trigger recreation of resources.
     Redeploy only works for resources in "Completed" or "Failed" phase.
     """
-    # Track watch event
-    global _watch_event_count, _last_watch_event_time
-    _watch_event_count += 1
-    _last_watch_event_time = datetime.utcnow()
-
-    operator_logger.info(f"[UPDATE] ✓ WATCH EVENT #{_watch_event_count}: {namespace}/{name}")
+    operator_logger.info(f"[UPDATE] BareMetalHostGenerator {name} update triggered")
 
     # Check for redeploy annotation
     if annotations and annotations.get('redeploy') == 'true':
@@ -629,13 +612,8 @@ async def delete_bmh(spec, name, namespace, status, **kwargs):
 
     If DELETE_RESOURCES_ON_DELETE is false, resources are preserved.
     """
-    # Track watch event
-    global _watch_event_count, _last_watch_event_time
-    _watch_event_count += 1
-    _last_watch_event_time = datetime.utcnow()
-
     handler_start_time = time.time()
-    operator_logger.info(f"[DELETE] ✓ WATCH EVENT #{_watch_event_count}: {namespace}/{name}")
+    operator_logger.info(f"[DELETE] Starting handler for BareMetalHost Generator: {name} in namespace: {namespace}")
 
     from src.config import DELETE_RESOURCES_ON_DELETE
 
@@ -703,22 +681,14 @@ async def cleanup_fn(**kwargs):
     Cleanup function called on operator shutdown.
 
     This handler:
-    - Cancels background tasks (buffer check, polling)
-    - Logs final watch statistics
+    - Cancels background buffer check task
     - Requests shutdown of buffer manager
     - Disconnects from server management systems
     """
     operator_logger.info("Operator shutting down, cleaning up resources")
 
-    # Log final watch statistics
-    global _watch_event_count, _last_watch_event_time
-    operator_logger.info(f"Total watch events received: {_watch_event_count}")
-    if _last_watch_event_time:
-        operator_logger.info(f"Last watch event: {_last_watch_event_time.isoformat()}")
-
-    # Cancel background tasks
+    # Cancel background buffer check task
     global _buffer_check_task
-
     if _buffer_check_task and not _buffer_check_task.done():
         operator_logger.info("Cancelling buffer check task...")
         _buffer_check_task.cancel()
