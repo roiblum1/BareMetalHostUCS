@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -16,4 +16,4 @@ ENV PYTHONPATH="${PYTHONPATH}:/app/src"
 expose 8080
 
 # Run the operator
-CMD ["kopf", "run", "--liveness=http://0.0.0.0:8080/healthz", "/app/src/operator_bmh_gen.py", "--all-namespaces"]
+CMD ["kopf", "run", "--verbose", "--liveness=http://0.0.0.0:8080/healthz", "/app/src/operator_bmh_gen.py", "--all-namespaces"]

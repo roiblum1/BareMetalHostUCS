@@ -41,7 +41,6 @@ unified_client: Optional[UnifiedServerClient] = None
 
 # Background tasks (created in startup)
 _buffer_check_task: Optional[asyncio.Task] = None
-_polling_task: Optional[asyncio.Task] = None
 
 # Track watch events for observability
 _watch_event_count = 0
@@ -119,13 +118,9 @@ async def configure(settings: kopf.OperatorSettings, **_):
     operator_logger.info("Operator configuration completed successfully.")
 
     # Create background task for buffer checking
-    global _buffer_check_task, _polling_task
+    global _buffer_check_task
     _buffer_check_task = asyncio.create_task(_buffer_check_loop(), name="buffer-check-loop")
     operator_logger.info("Started background buffer check task")
-
-    # Create background task for polling missed BMHGen CRs (fallback if watch fails)
-    _polling_task = asyncio.create_task(_polling_loop(), name="polling-loop")
-    operator_logger.info("Started background polling task (checks every 1 minute for missed CRs)")
 
 
 async def _buffer_check_loop():
@@ -167,94 +162,6 @@ async def _buffer_check_loop():
 
         # Wait before next iteration
         await asyncio.sleep(BUFFER_CHECK_INTERVAL)
-
-
-async def _polling_loop():
-    """
-    Background polling task that checks for BMHGen CRs every minute.
-
-    This is a fallback mechanism in case Kopf's watch connection fails or misses events.
-    It looks for BMHGen CRs with no status or stuck in Processing phase for >2 minutes,
-    and manually triggers processing.
-    """
-    operator_logger.info("Polling loop starting, waiting 60 seconds before first poll...")
-    await asyncio.sleep(60)
-
-    while True:
-        try:
-            global _watch_event_count, _last_watch_event_time
-
-            # Log watch health
-            if _last_watch_event_time:
-                seconds_since = (datetime.utcnow() - _last_watch_event_time).total_seconds()
-                operator_logger.info(
-                    f"[POLLING] Watch health: {_watch_event_count} events total, "
-                    f"last event {seconds_since:.0f}s ago"
-                )
-            else:
-                operator_logger.warning("[POLLING] Watch health: NO EVENTS RECEIVED YET - watch may be broken!")
-
-            # Query for BMHGen CRs that may have been missed
-            loop = asyncio.get_event_loop()
-            bmhgens = await loop.run_in_executor(
-                None,
-                lambda: custom_api.list_cluster_custom_object(
-                    group=BMHGenCRD.GROUP,
-                    version=BMHGenCRD.VERSION,
-                    plural=BMHGenCRD.PLURAL
-                )
-            )
-
-            missed_crs = []
-            for bmhgen in bmhgens.get("items", []):
-                name = bmhgen['metadata']['name']
-                namespace = bmhgen['metadata']['namespace']
-                status = bmhgen.get('status', {})
-                phase = status.get('phase')
-                creation_time = bmhgen['metadata'].get('creationTimestamp')
-
-                # Check if CR has no status (never processed by Kopf)
-                if not phase:
-                    operator_logger.warning(
-                        f"[POLLING] Found BMHGen with NO STATUS: {namespace}/{name} "
-                        f"(created: {creation_time}) - KOPF WATCH LIKELY MISSED THIS!"
-                    )
-                    missed_crs.append(bmhgen)
-                    continue
-
-                # Check if stuck in Processing for > 2 minutes
-                if phase == Phase.PROCESSING:
-                    # Try to parse creation time to see how long it's been processing
-                    try:
-                        from dateutil import parser as date_parser
-                        created = date_parser.isoparse(creation_time)
-                        age_seconds = (datetime.utcnow().replace(tzinfo=created.tzinfo) - created).total_seconds()
-
-                        if age_seconds > 120:  # 2 minutes
-                            operator_logger.warning(
-                                f"[POLLING] Found BMHGen stuck in Processing: {namespace}/{name} "
-                                f"(age: {age_seconds:.0f}s, message: {status.get('message', 'N/A')})"
-                            )
-                    except:
-                        pass
-
-            if missed_crs:
-                operator_logger.error(
-                    f"[POLLING] ⚠️  FOUND {len(missed_crs)} BMHGen CRs WITH NO STATUS! "
-                    f"This indicates Kopf watch is not working properly."
-                )
-                operator_logger.error("[POLLING] Recommendation: Restart the operator pod")
-            else:
-                operator_logger.debug("[POLLING] No missed BMHGen CRs found")
-
-        except asyncio.CancelledError:
-            operator_logger.info("Polling loop cancelled, exiting gracefully")
-            raise
-        except Exception as e:
-            operator_logger.error(f"Error in polling loop: {e}", exc_info=True)
-
-        # Wait 1 minute before next poll
-        await asyncio.sleep(60)
 
 
 @kopf.on.create(BMHGenCRD.GROUP, BMHGenCRD.VERSION, BMHGenCRD.PLURAL)
@@ -810,7 +717,7 @@ async def cleanup_fn(**kwargs):
         operator_logger.info(f"Last watch event: {_last_watch_event_time.isoformat()}")
 
     # Cancel background tasks
-    global _buffer_check_task, _polling_task
+    global _buffer_check_task
 
     if _buffer_check_task and not _buffer_check_task.done():
         operator_logger.info("Cancelling buffer check task...")
@@ -819,14 +726,6 @@ async def cleanup_fn(**kwargs):
             await _buffer_check_task
         except asyncio.CancelledError:
             operator_logger.info("Buffer check task cancelled successfully")
-
-    if _polling_task and not _polling_task.done():
-        operator_logger.info("Cancelling polling task...")
-        _polling_task.cancel()
-        try:
-            await _polling_task
-        except asyncio.CancelledError:
-            operator_logger.info("Polling task cancelled successfully")
 
     # Request buffer manager shutdown
     buffer_manager.request_shutdown()
