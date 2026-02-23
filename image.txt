@@ -1,0 +1,16 @@
+Imageים :
+ghcr.io/kyverno/kyverno:v1.16.2
+
+ghcr.io/kyverno/kyvernopre:v1.16.2
+
+ghcr.io/kyverno/background-controller:v1.16.2
+
+ghcr.io/kyverno/cleanup-controller:v1.16.2
+
+ghcr.io/kyverno/reports-controller:v1.16.2
+
+curlimages/curl:8.10.1 (בדיקות רשת ו-Webhooks).
+
+cgr.dev/chainguard/kubectl:latest (מחיקה וניקוי של Webhooks ו-CRDs הישנים).
+
+reg.kyverno.io/kyverno/kyverno-cli:v1.16.2
