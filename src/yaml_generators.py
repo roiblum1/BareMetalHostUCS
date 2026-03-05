@@ -341,9 +341,16 @@ class YamlGenerator:
                         },
                         {
                             "ipv4":{
+                                "auto-dns": True,
+                                "auto-gateway": True,
+                                "auto-routes": True,
                                 "dhcp": True,
-                                "dhcp-client-id": "mac",
                                 "enabled": True
+                            },
+                            "ipv6": {
+                                "autoconf": False,
+                                "dhcp": False,
+                                "enabled": False
                             },
                             "name": f"{interface_name}.{vlan_id_int}",
                             "state": "up",
@@ -354,7 +361,7 @@ class YamlGenerator:
                             }
                         }
                     ]
-                },
+                }, 
                 "interfaces": [
                     {
                         "macAddress": macAddress,
