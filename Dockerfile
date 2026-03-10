@@ -13,7 +13,7 @@ COPY src/ ./src/
 
 ENV PYTHONPATH="${PYTHONPATH}:/app/src"
 
-expose 8080
+EXPOSE 8080
 
-# Run the operator
-CMD ["kopf", "run", "--verbose", "--liveness=http://0.0.0.0:8080/healthz", "/app/src/operator_bmh_gen.py", "--all-namespaces"]
+# Run the operator using python -m to avoid arch-specific entry-point wrapper
+CMD ["python", "-m", "kopf", "run", "--verbose", "--liveness=http://0.0.0.0:8080/healthz", "/app/src/operator_bmh_gen.py", "--all-namespaces"]
