@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 from src.server_strategy import ServerType
 import yaml
-from src.config import bmh_logger, BMHCRD, NMStateConfigCRD
+from src.config import bmh_logger, BMHCRD, NMStateConfigCRD, ServerTypePattern
 
 
 # ============================================================================
@@ -120,13 +120,13 @@ class YamlGenerator:
         """
         server_name_lower = server_name.lower()
 
-        if "h100" in server_name_lower:
+        if ServerTypePattern.H100 in server_name_lower:
             self.bmh_logger.info(f"Detected H100 server: {server_name}, using interface ens8f0np0")
             return "ens8f0np0"
-        elif "h200" in server_name_lower:
+        elif ServerTypePattern.H200 in server_name_lower:
             self.bmh_logger.info(f"Detected H200 server: {server_name}, using interface ens33f0np0")
             return "ens33f0np0"
-        elif "data" in server_name_lower:
+        elif ServerTypePattern.DATA in server_name_lower:
             self.bmh_logger.info(f"Detected data server: {server_name}, using interface ens2f0np0")
             return "ens2f0np0"
         else:

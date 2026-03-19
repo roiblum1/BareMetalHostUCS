@@ -31,6 +31,8 @@ spec:
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         command:
+          - python
+          - -m
           - kopf
           - run
           - --liveness=http://0.0.0.0:8080/healthz
@@ -62,6 +64,14 @@ spec:
         # Resource deletion configuration
         - name: DELETE_RESOURCES_ON_DELETE
           value: {{ .Values.operator.deleteResourcesOnDelete | quote }}
+
+        # Server type detection patterns
+        - name: SERVER_PATTERN_H100
+          value: {{ .Values.operator.serverPatternH100 | quote }}
+        - name: SERVER_PATTERN_H200
+          value: {{ .Values.operator.serverPatternH200 | quote }}
+        - name: SERVER_PATTERN_DATA
+          value: {{ .Values.operator.serverPatternData | quote }}
 
         {{- if .Values.hpOneView.enabled }}
         # HP OneView configuration

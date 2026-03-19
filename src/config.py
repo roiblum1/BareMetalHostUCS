@@ -92,6 +92,19 @@ DELETE_RESOURCES_ON_DELETE = str_to_bool(os.getenv('DELETE_RESOURCES_ON_DELETE',
 
 
 # ============================================================================
+# Server Type Detection Patterns
+# ============================================================================
+# Substrings matched (case-insensitive) against server names to determine
+# NIC layout and MAC selection logic. Override via env var / ConfigMap when
+# naming conventions change without rebuilding the image.
+
+class ServerTypePattern:
+    H100 = os.getenv('SERVER_PATTERN_H100', 'h100')
+    H200 = os.getenv('SERVER_PATTERN_H200', 'h200')
+    DATA = os.getenv('SERVER_PATTERN_DATA', '-10tb-')
+
+
+# ============================================================================
 # Kubernetes CRD Constants
 # ============================================================================
 

@@ -19,6 +19,11 @@ operator:
   # When true, deletes BMH, Secret, and NMStateConfig when BareMetalHostGenerator is deleted
   # When false, preserves resources for debugging or manual cleanup
   deleteResourcesOnDelete: true
+  # Server type detection patterns (matched case-insensitive against server names)
+  # Override when naming conventions change without rebuilding the image
+  serverPatternH100: "h100"
+  serverPatternH200: "h200"
+  serverPatternData: "-10tb-"
   # Number of replica pods
   replicas: 1
   # Namespace to deploy operator (defaults to release namespace)

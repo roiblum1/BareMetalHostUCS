@@ -146,6 +146,16 @@ MAX_AVAILABLE_SERVERS=20          # Buffer limit
 BUFFER_CHECK_INTERVAL=30          # Check interval in seconds
 ```
 
+#### Server Type Detection Patterns
+Substrings matched (case-insensitive) against server names to select the correct NIC and MAC address.
+Override via env var or ConfigMap when naming conventions change — no image rebuild required.
+```bash
+SERVER_PATTERN_H100=h100          # H100 servers  → NIC ens8f0np0
+SERVER_PATTERN_H200=h200          # H200 servers  → NIC ens33f0np0
+SERVER_PATTERN_DATA=-10tb-        # Data servers  → NIC ens2f0np0
+                                  # Default (no match) → NIC eno12399np0
+```
+
 #### HP OneView (Management System)
 ```bash
 ONEVIEW_IP=10.0.0.1

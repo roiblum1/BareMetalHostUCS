@@ -7,7 +7,7 @@ import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 from src.server_strategy import ServerStrategy
-from src.config import dell_strategy_logger
+from src.config import dell_strategy_logger, ServerTypePattern
 
 disable_warnings(InsecureRequestWarning)
 logger = dell_strategy_logger
@@ -206,7 +206,7 @@ class DellServerStrategy(ServerStrategy):
 
         try:
             # H100/H200 servers: use 3rd NIC (index 2)
-            if "h100" in server_name_lower or "h200" in server_name_lower:
+            if ServerTypePattern.H100 in server_name_lower or ServerTypePattern.H200 in server_name_lower:
                 logger.info(f"Detected H100/H200 server: {server_name}, using 3rd network interface")
 
                 if len(network_interfaces) < 3:
@@ -233,8 +233,8 @@ class DellServerStrategy(ServerStrategy):
                 mac_address = first_partition.get("CurrentMacAddress")
                 return mac_address
 
-            # Data servers: use last interface, last port, last partition
-            elif "data" in server_name_lower:
+            # Data servers (e.g. ocp-zone1-r660-128cpu-1028gb-10tb-871...): use last interface, last port, last partition
+            elif ServerTypePattern.DATA in server_name_lower:
                 logger.info(f"Using 'data' server logic for {server_name}")
                 last_network_interface = network_interfaces[-1]
                 last_port = last_network_interface.get("Ports", [])[-1]
