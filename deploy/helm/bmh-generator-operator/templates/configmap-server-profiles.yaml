@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bmh-generator-operator.fullname" . }}-server-profiles
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bmh-generator-operator.labels" . | nindent 4 }}
+data:
+  profiles.yaml: |
+    profiles:
+    {{- range .Values.serverProfiles.profiles }}
+      -
+        {{- if .pattern }}
+        pattern: {{ .pattern | quote }}
+        {{- end }}
+        {{- if .default }}
+        default: true
+        {{- end }}
+        nic_name: {{ .nic_name | quote }}
+        mac_index: {{ .mac_index | quote }}
+    {{- end }}

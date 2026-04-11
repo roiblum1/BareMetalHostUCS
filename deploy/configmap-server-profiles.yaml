@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bmh-server-profiles
+  namespace: metal3-system
+data:
+  # Server type → NIC name and MAC-index profiles.
+  # Patterns are matched case-insensitively (first match wins).
+  # To add a new server type, append an entry and:
+  #   kubectl apply -f deploy/configmap-server-profiles.yaml
+  #   kubectl rollout restart deployment/bmh-generator-operator -n metal3-system
+  profiles.yaml: |
+    profiles:
+      - pattern: "h100"
+        nic_name: "ens8f0np0"
+        mac_index: "2"          # 3rd NIC (0-based index)
+      - pattern: "h200"
+        nic_name: "ens33f0np0"
+        mac_index: "2"
+      - pattern: "10tb"
+        nic_name: "ens2f0np0"
+        mac_index: "last"       # last interface / last port / last partition
+      - default: true
+        nic_name: "eno12399np0"
+        mac_index: "first"      # first interface / first port / first partition

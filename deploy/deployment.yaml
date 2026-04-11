@@ -212,6 +212,12 @@ spec:
               value: "20"  # Maximum number of available BareMetalHosts to maintain
             - name: BUFFER_CHECK_INTERVAL
               value: "30"  # Interval in seconds to check buffer and release servers
+            - name: SERVER_PROFILES_PATH
+              value: /config/profiles.yaml
+          volumeMounts:
+            - name: server-profiles
+              mountPath: /config
+              readOnly: true
           resources:
             requests:
               memory: "256Mi"
@@ -239,3 +245,7 @@ spec:
             capabilities:
               drop:
                 - ALL
+      volumes:
+        - name: server-profiles
+          configMap:
+            name: bmh-server-profiles
