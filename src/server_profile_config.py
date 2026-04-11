@@ -42,7 +42,7 @@ _DEFAULT_PROFILES_PATH = "/config/profiles.yaml"
 _BUILTIN_PROFILES = [
     {"pattern": "h100",   "nic_name": "ens8f0np0",   "mac_index": "2"},
     {"pattern": "h200",   "nic_name": "ens33f0np0",  "mac_index": "2"},
-    {"pattern": "10tb",   "nic_name": "ens2f0np0",   "mac_index": "last"},
+    {"pattern": "10tb-",  "nic_name": "ens2f0np0",   "mac_index": "last"},
     {"default": True,     "nic_name": "eno12399np0", "mac_index": "first"},
 ]
 

@@ -279,7 +279,7 @@ profiles:
   - pattern: "h200"
     nic_name: "ens33f0np0"
     mac_index: "2"
-  - pattern: "10tb"
+  - pattern: "10tb-"
     nic_name: "ens2f0np0"
     mac_index: "last"      # last NIC/port/partition
   - default: true          # fallback when no pattern matches
