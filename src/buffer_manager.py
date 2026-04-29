@@ -169,6 +169,13 @@ class BufferManager:
         server_name = name
         self.buffer_logger.info(f"Processing buffered generator: {name}")
 
+        # Extract per-CR network config overrides (present for spec override feature)
+        _nc = (bmhgen.get('spec') or {}).get('networkConfig') or {}
+        nic_name_override = _nc.get('nicName') or None
+        mac_index_override = _nc.get('macIndex') or None
+        if nic_name_override:
+            self.buffer_logger.info(f"[{name}] networkConfig override: nicName={nic_name_override}, macIndex={mac_index_override}")
+
         # Safety check: verify this generator is still in Buffered phase
         if not await self._verify_still_buffered(namespace, name):
             self.buffer_logger.warning(f"Generator {name} is no longer in Buffered phase, skipping")
@@ -206,7 +213,7 @@ class BufferManager:
                     loop = asyncio.get_event_loop()
                     mac_address, ipmi_address = await loop.run_in_executor(
                         None,
-                        lambda: unified_client.get_server_info(server_name, server_vendor)
+                        lambda: unified_client.get_server_info(server_name, server_vendor, mac_index_override)
                     )
                     status_update = {
                         "macAddress": mac_address,
@@ -323,7 +330,8 @@ class BufferManager:
                     namespace=target_namespace,
                     macAddress=mac_address,
                     infra_env=infra_env,
-                    vlanId=vlan_id
+                    vlanId=vlan_id,
+                    nic_name_override=nic_name_override
                 )
                 # Run blocking Kubernetes API call in thread pool
                 await loop.run_in_executor(
