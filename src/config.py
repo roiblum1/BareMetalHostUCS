@@ -92,16 +92,11 @@ DELETE_RESOURCES_ON_DELETE = str_to_bool(os.getenv('DELETE_RESOURCES_ON_DELETE',
 
 
 # ============================================================================
-# Server Type Detection Patterns
+# Server Profile Configuration
 # ============================================================================
-# Substrings matched (case-insensitive) against server names to determine
-# NIC layout and MAC selection logic. Override via env var / ConfigMap when
-# naming conventions change without rebuilding the image.
-
-class ServerTypePattern:
-    H100 = os.getenv('SERVER_PATTERN_H100', 'h100')
-    H200 = os.getenv('SERVER_PATTERN_H200', 'h200')
-    DATA = os.getenv('SERVER_PATTERN_DATA', '-10tb-')
+# Path to the YAML file (mounted from a ConfigMap) that defines server type
+# → NIC name and MAC-index profiles. See src/server_profile_config.py.
+SERVER_PROFILES_PATH = os.getenv('SERVER_PROFILES_PATH', '/config/profiles.yaml')
 
 
 # ============================================================================

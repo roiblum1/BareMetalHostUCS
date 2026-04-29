@@ -7,7 +7,8 @@ import requests
 from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 from src.server_strategy import ServerStrategy
-from src.config import dell_strategy_logger, ServerTypePattern
+from src.config import dell_strategy_logger
+from src.server_profile_config import lookup_profile
 
 disable_warnings(InsecureRequestWarning)
 logger = dell_strategy_logger
@@ -202,72 +203,61 @@ class DellServerStrategy(ServerStrategy):
         Returns:
             MAC address string or None if extraction fails
         """
-        server_name_lower = server_name.lower()
-
         try:
-            # H100/H200 servers: use 3rd NIC (index 2)
-            if ServerTypePattern.H100 in server_name_lower or ServerTypePattern.H200 in server_name_lower:
-                logger.info(f"Detected H100/H200 server: {server_name}, using 3rd network interface")
+            profile = lookup_profile(server_name)
+            mac_index = profile.get("mac_index", "first")
+            logger.info(
+                f"Server '{server_name}' mac_index='{mac_index}' "
+                f"(pattern: {profile.get('pattern', 'default')})"
+            )
 
-                if len(network_interfaces) < 3:
-                    logger.error(f"H100/H200 server {server_name} has only {len(network_interfaces)} interfaces, expected at least 3")
-                    return None
-
-                third_interface = network_interfaces[2]
-                ports = third_interface.get("Ports", [])
-                logger.info(f"H100/H200: Found {len(ports)} ports in 3rd interface")
-
+            if mac_index == "first":
+                iface = network_interfaces[0]
+                ports = iface.get("Ports", [])
                 if not ports:
-                    logger.error(f"No ports found in 3rd interface for H100/H200 device {device_id}")
+                    logger.error(f"No ports in first interface for device {device_id}")
                     return None
-
-                first_port = ports[0]
-                partitions = first_port.get("Partitions", [])
-                logger.info(f"H100/H200: Found {len(partitions)} partitions in first port")
-
+                partitions = ports[0].get("Partitions", [])
                 if not partitions:
-                    logger.error(f"No partitions found in first port of 3rd interface for H100/H200 device {device_id}")
+                    logger.error(f"No partitions in first port for device {device_id}")
                     return None
+                return partitions[0].get("CurrentMacAddress")
 
-                first_partition = partitions[0]
-                mac_address = first_partition.get("CurrentMacAddress")
-                return mac_address
+            elif mac_index == "last":
+                iface = network_interfaces[-1]
+                ports = iface.get("Ports", [])
+                if not ports:
+                    logger.error(f"No ports in last interface for device {device_id}")
+                    return None
+                partitions = ports[-1].get("Partitions", [])
+                if not partitions:
+                    logger.error(f"No partitions in last port for device {device_id}")
+                    return None
+                return partitions[-1].get("CurrentMacAddress")
 
-            # Data servers (e.g. ocp-zone1-r660-128cpu-1028gb-10tb-871...): use last interface, last port, last partition
-            elif ServerTypePattern.DATA in server_name_lower:
-                logger.info(f"Using 'data' server logic for {server_name}")
-                last_network_interface = network_interfaces[-1]
-                last_port = last_network_interface.get("Ports", [])[-1]
-                partitions = last_port.get("Partitions", [])[-1]
-                mac_address = partitions.get("CurrentMacAddress")
-                return mac_address
-
-            # Default: use first interface, first port, first partition
             else:
-                first_interface = network_interfaces[0]
-                logger.info(f"Using default logic - First interface: {first_interface}")
-                ports = first_interface.get("Ports", [])
-                logger.info(f"Ports found: {len(ports)} ports")
-
+                # Integer index — e.g. "2" for H100/H200 (3rd NIC, 0-based)
+                idx = int(mac_index)
+                if len(network_interfaces) <= idx:
+                    logger.error(
+                        f"Server '{server_name}' has only {len(network_interfaces)} "
+                        f"interfaces; profile requires index {idx}"
+                    )
+                    return None
+                iface = network_interfaces[idx]
+                ports = iface.get("Ports", [])
                 if not ports:
-                    logger.error(f"No ports found in first interface for device {device_id}")
+                    logger.error(f"No ports in interface[{idx}] for device {device_id}")
                     return None
-
-                first_port = ports[0]
-                partitions = first_port.get("Partitions", [])
-                logger.info(f"Partitions found: {len(partitions)} partitions")
-
+                partitions = ports[0].get("Partitions", [])
                 if not partitions:
-                    logger.error(f"No partitions found in first port for device {device_id}")
+                    logger.error(f"No partitions in ports[0] of interface[{idx}] for device {device_id}")
                     return None
-
-                first_partition = partitions[0]
-                mac_address = first_partition.get("CurrentMacAddress")
-                return mac_address
+                return partitions[0].get("CurrentMacAddress")
 
         except Exception as e:
             logger.error(f"Failed to extract MAC from inventory for device {device_id}: {e}")
-            return None 
+            return None
     def clear_cache(self):
         """Clear any cached data."""
         self._cache = None

@@ -146,15 +146,11 @@ MAX_AVAILABLE_SERVERS=20          # Buffer limit
 BUFFER_CHECK_INTERVAL=30          # Check interval in seconds
 ```
 
-#### Server Type Detection Patterns
-Substrings matched (case-insensitive) against server names to select the correct NIC and MAC address.
-Override via env var or ConfigMap when naming conventions change — no image rebuild required.
+#### Server Profiles Path
 ```bash
-SERVER_PATTERN_H100=h100          # H100 servers  → NIC ens8f0np0
-SERVER_PATTERN_H200=h200          # H200 servers  → NIC ens33f0np0
-SERVER_PATTERN_DATA=-10tb-        # Data servers  → NIC ens2f0np0
-                                  # Default (no match) → NIC eno12399np0
+SERVER_PROFILES_PATH=/config/profiles.yaml   # YAML file mounted from ConfigMap
 ```
+Override for local development (see [Dynamic Server Profiles](#dynamic-server-profiles) below).
 
 #### HP OneView (Management System)
 ```bash
@@ -268,6 +264,67 @@ kubectl get bmhgen -A -o json | jq '.items[] | select(.status.phase=="Buffered")
 # View available count
 kubectl get bmh -A -o json | jq '[.items[] | select(.status.provisioning.state != "provisioned")] | length'
 ```
+
+## Dynamic Server Profiles
+
+Server type → NIC/MAC-index mapping is stored in a ConfigMap-mounted YAML file. No image rebuild is needed to add a new server type — update the ConfigMap and roll the deployment.
+
+### Profile Format
+
+```yaml
+profiles:
+  - pattern: "h100"        # matched case-insensitively against server name
+    nic_name: "ens8f0np0"
+    mac_index: "2"         # 0-based integer index
+  - pattern: "h200"
+    nic_name: "ens33f0np0"
+    mac_index: "2"
+  - pattern: "10tb-"
+    nic_name: "ens2f0np0"
+    mac_index: "last"      # last NIC/port/partition
+  - default: true          # fallback when no pattern matches
+    nic_name: "eno12399np0"
+    mac_index: "first"     # first NIC/port/partition
+```
+
+**`mac_index` values:**
+- `"first"` — first interface / first port / first partition
+- `"last"` — last interface / last port / last partition
+- `"2"` (integer string) — zero-based index into the interface list
+
+Pattern matching is case-insensitive substring search. First match wins.
+
+### Adding a New Server Type
+
+**Via Helm (recommended):**
+```yaml
+# values.yaml
+serverProfiles:
+  profiles:
+    - pattern: "b200"
+      nic_name: "ens4f0np0"
+      mac_index: "0"
+    # ... existing entries ...
+```
+```bash
+helm upgrade bmh-generator deploy/helm/bmh-generator-operator -n metal3-system
+```
+
+**Via standalone ConfigMap:**
+```bash
+# Edit deploy/configmap-server-profiles.yaml, append entry, then:
+kubectl apply -f deploy/configmap-server-profiles.yaml
+kubectl rollout restart deployment/bmh-generator-operator -n metal3-system
+```
+
+### Local Development
+
+```bash
+# Point to a local profiles file instead of the ConfigMap mount
+export SERVER_PROFILES_PATH=./deploy/configmap-server-profiles.yaml
+```
+
+If the file is absent, the operator falls back to built-in defaults (same profiles as shipped in the ConfigMap).
 
 ## Helm Chart
 

@@ -19,15 +19,28 @@ operator:
   # When true, deletes BMH, Secret, and NMStateConfig when BareMetalHostGenerator is deleted
   # When false, preserves resources for debugging or manual cleanup
   deleteResourcesOnDelete: true
-  # Server type detection patterns (matched case-insensitive against server names)
-  # Override when naming conventions change without rebuilding the image
-  serverPatternH100: "h100"
-  serverPatternH200: "h200"
-  serverPatternData: "-10tb-"
   # Number of replica pods
   replicas: 1
   # Namespace to deploy operator (defaults to release namespace)
   namespace: ""
+# Server profile configuration — server type → NIC name and MAC-index mapping.
+# Patterns are matched case-insensitively against server names (first match wins).
+# Add new server types here and upgrade the Helm release — no image rebuild needed.
+serverProfiles:
+  profiles:
+    - pattern: "h100"
+      nic_name: "ens8f0np0"
+      mac_index: "2"
+    - pattern: "h200"
+      nic_name: "ens33f0np0"
+      mac_index: "2"
+    - pattern: "10tb-"
+      nic_name: "ens2f0np0"
+      mac_index: "last"
+    - default: true
+      nic_name: "eno12399np0"
+      mac_index: "first"
+
 # Service Account
 serviceAccount:
   create: true
