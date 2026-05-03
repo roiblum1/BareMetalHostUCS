@@ -16,6 +16,7 @@ from src.openshift_utils import OpenShiftUtils
 from src.yaml_generators import YamlGenerator
 from src.unified_server_client import UnifiedServerClient, initialize_unified_client
 from src.config import operator_logger, buffer_logger, BUFFER_CHECK_INTERVAL, BMHGenCRD, BMHCRD, Phase
+from src.server_profile_config import resolve_nic_and_mac_index
 
 # Initialize YAML generator
 yaml_generator = YamlGenerator()
@@ -224,11 +225,16 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
     metadata = kwargs.get('metadata', {})
     operator_logger.info(f"Metadata for BMHG {name}: {metadata}")
 
-    server_vendor = annotations.get('server_vendor') if annotations else None
+    server_vendor = (annotations.get('server_vendor') if annotations else None)
+    if server_vendor:
+        server_vendor = server_vendor.upper()
     vlan_id = annotations.get('vlanId') if annotations else None
     nic_name_override, mac_index_override = _extract_network_override(spec, server_name)
+    effective_nic, effective_mac_index = resolve_nic_and_mac_index(server_name, nic_name_override, mac_index_override)
     if nic_name_override:
         operator_logger.info(f"[{server_name}] networkConfig override: nicName={nic_name_override}, macIndex={mac_index_override}")
+    else:
+        operator_logger.info(f"[{server_name}] resolved profile: nicName={effective_nic}, macIndex={effective_mac_index}")
 
     operator_logger.info(f"Server vendor annotation: {server_vendor}")
 
@@ -358,6 +364,8 @@ async def create_bmh(spec: Dict[str, Any], name: str, namespace: str, annotation
         patch.status["ipmiAddress"] = ip_address
         patch.status["serverVendor"] = server_vendor
         patch.status["vlanId"] = vlan_id
+        patch.status["selectedNicName"] = effective_nic
+        patch.status["selectedMacIndex"] = effective_mac_index
 
         handler_duration = time.time() - handler_start_time
         operator_logger.info(f"[CREATE] Successfully completed BareMetalHost creation for: {server_name} (took {handler_duration:.2f}s)")
@@ -447,7 +455,10 @@ async def redeploy_bmh_resources(spec, status, name, namespace, annotations, pat
         # Step 2: Re-query server info from management system
         server_name = spec.get('serverName', name)
         server_vendor = annotations.get('server_vendor') if annotations else None
+        if server_vendor:
+            server_vendor = server_vendor.upper()
         nic_name_override, mac_index_override = _extract_network_override(spec, server_name)
+        effective_nic, effective_mac_index = resolve_nic_and_mac_index(server_name, nic_name_override, mac_index_override)
         if nic_name_override:
             operator_logger.info(f"[REDEPLOY] [{server_name}] networkConfig override: nicName={nic_name_override}, macIndex={mac_index_override}")
 
@@ -479,6 +490,8 @@ async def redeploy_bmh_resources(spec, status, name, namespace, annotations, pat
         # Step 5: Update status to Completed
         patch.status["phase"] = Phase.COMPLETED
         patch.status["message"] = "Resources successfully redeployed"
+        patch.status["selectedNicName"] = effective_nic
+        patch.status["selectedMacIndex"] = effective_mac_index
 
         handler_duration = time.time() - handler_start_time
         operator_logger.info(f"[REDEPLOY] Successfully completed redeploy for: {name} (took {handler_duration:.2f}s)")

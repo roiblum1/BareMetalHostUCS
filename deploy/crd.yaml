@@ -68,11 +68,16 @@ spec:
                 description: "Namespace of the created BareMetalHost resource"
               serverVendor:
                 type: string
-                enum: ["HP", "DELL", "CISCO"]
-                description: "Server vendor type detected or specified"
+                description: "Server vendor type detected or specified (HP, DELL, CISCO)"
               vlanId:
                 type: string
                 description: "VLAN ID for Dell servers"
+              selectedNicName:
+                type: string
+                description: "Effective NIC name used for this host (from spec.networkConfig or server profile)"
+              selectedMacIndex:
+                type: string
+                description: "Effective MAC index used for this host (from spec.networkConfig or server profile)"
     subresources:
       status: {}
     additionalPrinterColumns:
